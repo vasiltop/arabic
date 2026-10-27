@@ -24,7 +24,7 @@ Register a username and a password of at least 12 characters, add nouns with the
 
 Use **Decks** to organize nouns and choose which decks enter the review queue. Each account has a permanent Default deck. Both noun forms stay together when moving between decks, and disabling a deck preserves its schedules. Deleting a deck moves its entries to Default. Export and import content through versioned JSON files; imported decks start disabled. See the [deck file format and merge rules](docs/DECK-FORMAT.md).
 
-Review focuses on at most **five learning cards across enabled decks**, including cards waiting for their next review. Singular and plural forms count separately. A card leaves the learning set after two consecutive successful ratings (Hard, Good, or Easy), making room for one new card. Again resets its progress and keeps it in learning. Previously reviewed learning cards take priority over unseen cards, and learned cards still return on their normal schedule. Refreshing or reopening Review does not unlock more cards. Deck due counts show only eligible cards.
+Review starts with **five learning cards across enabled decks**, including cards waiting for their next review. Singular and plural forms count separately. A card leaves the learning set after two consecutive successful ratings (Hard, Good, or Easy), making room for one new card. Again resets its progress and keeps it in learning. Previously reviewed learning cards take priority over unseen cards, and learned cards still return on their normal schedule. Refreshing or reopening Review does not unlock more cards. Deck due counts show only eligible cards. Once the queue is finished, **Keep going** unlocks five more learning slots for today when more cards are available. You can repeat this after finishing each batch. Extensions survive refreshes and restarts, reset the next day, and never bring scheduled reviews forward. The study day uses your saved profile timezone when available, otherwise UTC.
 
 Checking and building configure linking but never start or initialize a database:
 
@@ -85,4 +85,4 @@ jacket build
 python3 tests/decks.py
 ```
 
-The integration suite creates and removes its own temporary PostgreSQL cluster. It checks migration of populated databases, deck ownership, activation, noun moves, import/export round trips, stale previews, validation, rollback, grammatical gender, and both example displays. It does not use the normal app database.
+The integration suite creates and removes its own temporary PostgreSQL cluster. It checks migration of populated databases, deck ownership, activation, noun moves, import/export round trips, stale previews, validation, rollback, grammatical gender, both example displays, extra review batches, daily resets, and repeat-submission protection. It does not use the normal app database.

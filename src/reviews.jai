@@ -1,19 +1,50 @@
 // Reserve learning slots even when those cards are not due. Applying LIMIT after
-// due_at would introduce five more new cards every time the learner returned.
+// due_at would introduce more new cards every time the learner returned.
 // Reviewed/lapsed cards take slots before unseen cards; IDs keep the set stable.
 review_eligibility_sql :: #string SQL
-WITH active_cards AS (
+WITH study_day AS (
+    -- Profile preferences are optional until the independent profile migration is installed.
+    SELECT id AS user_id, (now() AT TIME ZONE COALESCE(to_jsonb(u)->>'timezone','UTC'))::date AS day
+    FROM users u WHERE id=$1
+), review_limit AS (
+    SELECT d.day, 5+COALESCE(x.extra_cards,0) AS card_limit
+    FROM study_day d LEFT JOIN review_extensions x ON x.user_id=d.user_id AND x.study_day=d.day
+), active_cards AS (
     SELECT c.*,e.type FROM review_cards c
     JOIN entries e ON e.id=c.entry_id JOIN decks d ON d.id=e.deck_id
     WHERE e.user_id=$1 AND d.enabled
 ), learning_cards AS (
     SELECT id FROM active_cards WHERE repetitions<2
-    ORDER BY (last_reviewed_at IS NULL),id LIMIT 5
+    ORDER BY (last_reviewed_at IS NULL),id LIMIT (SELECT card_limit FROM review_limit)
 ), eligible_cards AS (
     SELECT * FROM active_cards
     WHERE repetitions>=2 OR id IN (SELECT id FROM learning_cards)
 )
 SQL
+
+Review_Extension_Form :: struct {
+    card_limit: s64;
+    study_day: string;
+}
+
+Review_Extension_State :: struct {
+    study_day: string;
+    card_limit: s64;
+    can_extend: bool;
+}
+
+can_extend_review_sql :: "NOT EXISTS (SELECT 1 FROM eligible_cards WHERE due_at<=now()) AND EXISTS (SELECT 1 FROM active_cards WHERE due_at<=now() AND id NOT IN (SELECT id FROM eligible_cards))";
+
+extend_review :: (form: Http.Form(Review_Extension_Form), request: *Http.Request) -> Http.Response {
+    user, signed_in := current_user(request);
+    if !signed_in return Http.redirect("/login");
+    if form.card_limit < 5 || form.card_limit % 5 != 0 return Http.text("Invalid review limit.", 400);
+    // The day and previous limit make repeated submissions harmless, even on an empty next batch.
+    query := tprint("% INSERT INTO review_extensions (user_id,study_day,extra_cards) SELECT $1,day,card_limit FROM review_limit WHERE card_limit=$2 AND day::text=$3 AND (%) ON CONFLICT (user_id) DO UPDATE SET study_day=EXCLUDED.study_day,extra_cards=EXCLUDED.extra_cards WHERE review_extensions.study_day<>EXCLUDED.study_day OR review_extensions.extra_cards=EXCLUDED.extra_cards-5", review_eligibility_sql, can_extend_review_sql);
+    success, _ := Postgres.execute(database_connection, query, user.id, form.card_limit, form.study_day);
+    if !success return Http.text("Could not extend reviews. Try again.", 500);
+    return Http.redirect("/quiz", 303);
+}
 
 load_due_card :: (user_id: s64) -> Card, bool {
     ids, success := Postgres.execute(database_connection, Id_Row,
@@ -45,7 +76,16 @@ quiz_card_markup :: (card: Card, found: bool, user_id: s64) -> string {
     defer free_db_rows(*decks);
     active := false;
     if loaded for decks if it.enabled active = true;
-    return tprint("<section class=\"panel\" id=\"quiz-card\"><h1>%</h1><a class=\"button secondary\" href=\"/decks\">Decks</a></section>", ifx active then "No reviews due" else "No active decks");
+    extension := "";
+    if active {
+        rows, ok := Postgres.execute(database_connection, Review_Extension_State,
+            tprint("% SELECT day::text AS study_day,card_limit,(%) AS can_extend FROM review_limit", review_eligibility_sql, can_extend_review_sql), user_id);
+        defer free_db_rows(*rows);
+        if ok && rows.count == 1 && rows[0].can_extend {
+            extension = tprint("<form action=\"/quiz/extend\" method=\"post\"><input type=\"hidden\" name=\"card_limit\" value=\"%\"><input type=\"hidden\" name=\"study_day\" value=\"%\"><button type=\"submit\">Keep going</button></form>", rows[0].card_limit, html_escape(rows[0].study_day));
+        }
+    }
+    return tprint("<section class=\"panel\" id=\"quiz-card\"><h1>%</h1><div class=\"actions\" style=\"justify-content:center\">%<a class=\"button secondary\" href=\"/decks\">Decks</a></div></section>", ifx active then "No reviews due" else "No active decks", extension);
 }
 
 refresh_quiz :: (user_id: s64) -> Http.Response {
@@ -78,7 +118,7 @@ quiz_page :: (request: *Http.Request) -> Http.Response {
     if !signed_in return Http.redirect("/login");
     card, found := load_due_card(user.id);
     defer free_db_rows(*card);
-    return noun_page("Review", tprint("<p class=\"muted\">Learn up to 5 cards at a time. Two successful reviews unlock a new card. Singular and plural count separately.</p>%", quiz_card_markup(card, found, user.id)), user);
+    return noun_page("Review", quiz_card_markup(card, found, user.id), user);
 }
 
 noun_answer_markup :: (card: Card) -> string {
