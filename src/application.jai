@@ -87,11 +87,11 @@ layout :: (title: string, content: string, user: User = .{}) -> string {
     append(*output, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     append(*output, "<title>");
     append(*output, html_escape(title));
-    append(*output, " · Arabic Noun Studio</title>");
+    append(*output, " · Learn Arabic</title>");
     append(*output, "<script type=\"module\" src=\"/static/datastar.js\"></script><link rel=\"stylesheet\" href=\"/static/site.css\"></head><body>");
-    append(*output, "<header><a href=\"/\"><strong>Arabic Noun Studio</strong></a><nav>");
+    append(*output, "<header><a href=\"/\"><strong>Learn Arabic</strong></a><nav>");
     if user.id {
-        append(*output, "<a href=\"/nouns\">My nouns</a><a href=\"/quiz\">Review</a><span>");
+        append(*output, "<a href=\"/nouns\">Nouns</a><a href=\"/quiz\">Review</a><span>");
         append(*output, html_escape(user.username));
         append(*output, "</span><form action=\"/logout\" method=\"post\"><button class=\"secondary\" type=\"submit\">Sign out</button></form>");
     } else {
@@ -99,7 +99,7 @@ layout :: (title: string, content: string, user: User = .{}) -> string {
     }
     append(*output, "</nav></header><main>");
     append(*output, content);
-    append(*output, "</main><footer>Modern Standard Arabic · Add the vowels you want to learn; prompts hide them until reveal.</footer></body></html>");
+    append(*output, "</main></body></html>");
     return builder_to_string(*output,, temp);
 }
 
@@ -108,12 +108,12 @@ panel_error :: (message: string) -> string {
 }
 
 form_page :: (title: string, fields: string, action: string, submit: string, user: User = .{}) -> string {
-    content := tprint("<section class=\"panel\"><h1>%</h1>%<form action=\"%\" method=\"post\">%<div class=\"actions\"><button type=\"submit\">%</button></div></form></section>", html_escape(title), "", action, fields, html_escape(submit));
+    content := tprint("<section class=\"panel\"><h1>%</h1><form action=\"%\" method=\"post\">%<div class=\"actions\"><button type=\"submit\">%</button></div></form></section>", html_escape(title), action, fields, html_escape(submit));
     return layout(title, content, user);
 }
 
 auth_form :: (is_register: bool, message := "") -> string {
-    heading := ifx is_register then "Create your account" else "Sign in";
+    heading := ifx is_register then "Create account" else "Sign in";
     action := ifx is_register then "/register" else "/login";
     button := ifx is_register then "Create account" else "Sign in";
     fields: String_Builder;
@@ -224,11 +224,8 @@ clear_session_cookie :: (response: *Http.Response) {
 
 home :: (request: *Http.Request) -> Http.Response {
     user, signed_in := current_user(request);
-    if signed_in {
-        content := "<section class=\"panel\"><p class=\"muted\">Your personal MSA word bank</p><h1>Learn Arabic, one noun at a time.</h1><p>Add vocalized singular and plural forms, then review each as an active-recall card.</p><div class=\"actions\"><a class=\"button\" href=\"/nouns\">Open my noun bank</a><a class=\"button secondary\" href=\"/quiz\">Start a review</a></div></section>";
-        return Http.html(layout("Home", content, user));
-    }
-    content := "<section class=\"panel\"><p class=\"muted\">Modern Standard Arabic vocabulary</p><h1>Build a noun bank that helps words stick.</h1><p>Save the vocalized singular and plural, add examples, and practice remembering each meaning with spaced reviews.</p><div class=\"actions\"><a class=\"button\" href=\"/register\">Create an account</a><a class=\"button secondary\" href=\"/login\">Sign in</a></div><div lang=\"ar\" dir=\"rtl\" class=\"arabic\"><p>ابدأ رحلتك في تعلّم اللغة العربية.</p></div></section>";
+    if signed_in return Http.redirect("/nouns");
+    content := "<section class=\"panel\"><h1>Learn Arabic</h1><div class=\"actions\"><a class=\"button\" href=\"/register\">Create account</a><a class=\"button secondary\" href=\"/login\">Sign in</a></div></section>";
     return Http.html(layout("Home", content));
 }
 
@@ -316,11 +313,11 @@ nouns_page :: (request: *Http.Request) -> Http.Response {
     if !success return Http.text("Could not load your noun bank.", 500);
 
     content: String_Builder;
-    append(*content, "<section class=\"topline\"><div><p class=\"muted\">Your vocabulary</p><h1>My noun bank</h1></div><a class=\"button\" href=\"/nouns/new\">Add a noun</a></section>");
-    append(*content, tprint("<p class=\"muted\">% nouns · % review cards</p>", tprint("%", nouns.count), tprint("%", nouns.count * 2)));
+    append(*content, "<section class=\"topline\"><h1>Nouns</h1><a class=\"button\" href=\"/nouns/new\">Add noun</a></section>");
+    append(*content, tprint("<p class=\"muted\">% noun%</p>", nouns.count, ifx nouns.count == 1 then "" else "s"));
     append(*content, "<section class=\"panel\">");
     if nouns.count == 0 {
-        append(*content, "<p>Your bank is empty. Add your first noun to create its singular and plural review cards.</p>");
+        append(*content, "<p>No nouns yet.</p>");
     }
     for noun: nouns {
         append(*content, "<div class=\"word-row\"><div><div class=\"arabic\" lang=\"ar\" dir=\"rtl\">");
@@ -329,7 +326,7 @@ nouns_page :: (request: *Http.Request) -> Http.Response {
         append(*content, html_escape(noun.plural));
         append(*content, "</div><strong>");
         append(*content, html_escape(noun.meaning));
-        append(*content, "</strong><div class=\"muted\">");
+        append(*content, "</strong><div class=\"muted\" lang=\"ar\" dir=\"rtl\">");
         append(*content, html_escape(noun.singular_sentence));
         append(*content, "</div></div><div class=\"actions\"><a class=\"button secondary\" href=\"/nouns/");
         append(*content, tprint("%", noun.id));
@@ -338,23 +335,22 @@ nouns_page :: (request: *Http.Request) -> Http.Response {
         append(*content, "/delete\" method=\"post\"><button class=\"danger\" type=\"submit\">Delete</button></form></div></div>");
     }
     append(*content, "</section>");
-    append(*content, "<p><a href=\"/quiz\">Review due cards →</a></p>");
-    return noun_page("My nouns", builder_to_string(*content,, temp), user);
+    return noun_page("Nouns", builder_to_string(*content,, temp), user);
 }
 
 noun_form_markup :: (action: string, noun: Noun = .{}, error_message: string = "") -> string {
     b: String_Builder;
     append(*b, "<section class=\"panel\"><h1>");
-    append(*b, ifx action == "/nouns" then "Add a noun" else "Edit noun");
-    append(*b, "</h1><p>Enter both forms with the vowels you want to learn, plus one translated example for each.</p>");
+    append(*b, ifx action == "/nouns" then "Add noun" else "Edit noun");
+    append(*b, "</h1>");
     if error_message.count append(*b, panel_error(error_message));
     append(*b, tprint("<form action=\"%\" method=\"post\"><div class=\"grid\">", action));
-    append(*b, tprint("<div><label for=\"singular\">Singular (vocalized)</label><input id=\"singular\" name=\"singular\" lang=\"ar\" dir=\"rtl\" required value=\"%\"></div>", html_escape(noun.singular)));
-    append(*b, tprint("<div><label for=\"plural\">Plural (vocalized)</label><input id=\"plural\" name=\"plural\" lang=\"ar\" dir=\"rtl\" required value=\"%\"></div>", html_escape(noun.plural)));
+    append(*b, tprint("<div><label for=\"singular\">Singular (with vowels)</label><input id=\"singular\" name=\"singular\" lang=\"ar\" dir=\"rtl\" required value=\"%\"></div>", html_escape(noun.singular)));
+    append(*b, tprint("<div><label for=\"plural\">Plural (with vowels)</label><input id=\"plural\" name=\"plural\" lang=\"ar\" dir=\"rtl\" required value=\"%\"></div>", html_escape(noun.plural)));
     append(*b, "</div>");
     append(*b, tprint("<label for=\"meaning\">English meaning</label><input id=\"meaning\" name=\"meaning\" required value=\"%\">", html_escape(noun.meaning)));
-    append(*b, tprint("<div class=\"grid\"><div><label for=\"singular_sentence\">Singular example in Arabic</label><textarea id=\"singular_sentence\" name=\"singular_sentence\" lang=\"ar\" dir=\"rtl\" required>%</textarea><label for=\"singular_translation\">English translation</label><textarea id=\"singular_translation\" name=\"singular_translation\" required>%</textarea></div>", html_escape(noun.singular_sentence), html_escape(noun.singular_translation)));
-    append(*b, tprint("<div><label for=\"plural_sentence\">Plural example in Arabic</label><textarea id=\"plural_sentence\" name=\"plural_sentence\" lang=\"ar\" dir=\"rtl\" required>%</textarea><label for=\"plural_translation\">English translation</label><textarea id=\"plural_translation\" name=\"plural_translation\" required>%</textarea></div></div>", html_escape(noun.plural_sentence), html_escape(noun.plural_translation)));
+    append(*b, tprint("<div class=\"grid\"><div><label for=\"singular_sentence\">Singular example</label><textarea id=\"singular_sentence\" name=\"singular_sentence\" lang=\"ar\" dir=\"rtl\" required>%</textarea><label for=\"singular_translation\">English translation</label><textarea id=\"singular_translation\" name=\"singular_translation\" required>%</textarea></div>", html_escape(noun.singular_sentence), html_escape(noun.singular_translation)));
+    append(*b, tprint("<div><label for=\"plural_sentence\">Plural example</label><textarea id=\"plural_sentence\" name=\"plural_sentence\" lang=\"ar\" dir=\"rtl\" required>%</textarea><label for=\"plural_translation\">English translation</label><textarea id=\"plural_translation\" name=\"plural_translation\" required>%</textarea></div></div>", html_escape(noun.plural_sentence), html_escape(noun.plural_translation)));
     append(*b, "<div class=\"actions\"><button type=\"submit\">Save noun</button><a class=\"button secondary\" href=\"/nouns\">Cancel</a></div></form></section>");
     return builder_to_string(*b,, temp);
 }
@@ -362,7 +358,7 @@ noun_form_markup :: (action: string, noun: Noun = .{}, error_message: string = "
 new_noun_page :: (request: *Http.Request) -> Http.Response {
     user, signed_in := current_user(request);
     if !signed_in return Http.redirect("/login");
-    return noun_page("Add a noun", noun_form_markup("/nouns"), user);
+    return noun_page("Add noun", noun_form_markup("/nouns"), user);
 }
 
 valid_noun :: (noun: Noun_Form) -> bool {
@@ -375,7 +371,7 @@ create_noun :: (form: Http.Form(Noun_Form), request: *Http.Request) -> Http.Resp
     user, signed_in := current_user(request);
     if !signed_in return Http.redirect("/login");
     noun := Noun_Form.{ form.singular, form.plural, form.meaning, form.singular_sentence, form.singular_translation, form.plural_sentence, form.plural_translation };
-    if !valid_noun(noun) return noun_page("Add a noun", noun_form_markup("/nouns", .{}, "Fill in every field."), user);
+    if !valid_noun(noun) return noun_page("Add noun", noun_form_markup("/nouns", .{}, "Fill in every field."), user);
 
     Postgres.execute(database_connection, "BEGIN");
     ids, inserted := Postgres.execute(database_connection, Id_Row,
@@ -383,7 +379,7 @@ create_noun :: (form: Http.Form(Noun_Form), request: *Http.Request) -> Http.Resp
         user.id, noun.singular, noun.plural, noun.meaning, noun.singular_sentence, noun.singular_translation, noun.plural_sentence, noun.plural_translation);
     if !inserted || ids.count == 0 {
         Postgres.execute(database_connection, "ROLLBACK");
-        return noun_page("Add a noun", noun_form_markup("/nouns", .{}, "Could not save this noun."), user);
+        return noun_page("Add noun", noun_form_markup("/nouns", .{}, "Could not save this noun."), user);
     }
     noun_id := ids[0].id;
     singular_card_sql := "INSERT INTO review_cards (noun_id, form) VALUES ($1, 'singular')";
@@ -392,7 +388,7 @@ create_noun :: (form: Http.Form(Noun_Form), request: *Http.Request) -> Http.Resp
     _, plural_card := Postgres.execute(database_connection, plural_card_sql, noun_id);
     if !singular_card || !plural_card {
         Postgres.execute(database_connection, "ROLLBACK");
-        return noun_page("Add a noun", noun_form_markup("/nouns", .{}, "Could not create review cards for this noun."), user);
+        return noun_page("Add noun", noun_form_markup("/nouns", .{}, "Could not create review cards for this noun."), user);
     }
     Postgres.execute(database_connection, "COMMIT");
     return Http.redirect("/nouns", 303);
@@ -468,26 +464,25 @@ load_due_card_by_id :: (user_id: s64, card_id: s64) -> Card, bool {
 }
 
 quiz_card_markup :: (card: Card, found: bool) -> string {
-    if !found return "<section class=\"panel\" id=\"quiz-card\"><h1>Review</h1><p>You have no cards due right now. Add nouns or come back later.</p><a class=\"button secondary\" href=\"/nouns\">Open noun bank</a></section>";
+    if !found return "<section class=\"panel\" id=\"quiz-card\"><h1>No reviews due</h1><a class=\"button secondary\" href=\"/nouns\">Nouns</a></section>";
     word := ifx card.form == "plural" then card.plural else card.singular;
     sentence := ifx card.form == "plural" then card.plural_sentence else card.singular_sentence;
-    return tprint("<section class=\"panel\" id=\"quiz-card\" data-signals:rating=\"0\"><p class=\"muted\">Recall the English meaning · % form</p><div class=\"arabic\" lang=\"ar\" dir=\"rtl\">%</div><p class=\"muted\">Translate this example sentence</p><div class=\"arabic example-prompt\" lang=\"ar\" dir=\"rtl\">%</div><div class=\"actions\" style=\"justify-content:center\"><button type=\"button\" data-on:click=\"@get('/quiz/reveal/%')\">Reveal answer</button></div><div id=\"quiz-answer\" aria-live=\"polite\"></div></section>", html_escape(card.form), html_escape(unvowel(word)), html_escape(sentence), tprint("%", card.id));
+    form_label := ifx card.form == "plural" then "Plural" else "Singular";
+    return tprint("<section class=\"panel\" id=\"quiz-card\" data-signals:rating=\"0\"><p class=\"muted\">%</p><div class=\"arabic\" lang=\"ar\" dir=\"rtl\">%</div><p class=\"muted\">Translate</p><div class=\"arabic example-prompt\" lang=\"ar\" dir=\"rtl\">%</div><div class=\"actions\" style=\"justify-content:center\"><button type=\"button\" data-on:click=\"@get('/quiz/reveal/%')\">Reveal</button></div><div id=\"quiz-answer\" aria-live=\"polite\"></div></section>", form_label, html_escape(unvowel(word)), html_escape(sentence), tprint("%", card.id));
 }
 
 quiz_page :: (request: *Http.Request) -> Http.Response {
     user, signed_in := current_user(request);
     if !signed_in return Http.redirect("/login");
     card, found := load_due_card(user.id);
-    content := tprint("<p><a href=\"/nouns\">← My noun bank</a></p>%", quiz_card_markup(card, found));
-    return noun_page("Review", content, user);
+    return noun_page("Review", quiz_card_markup(card, found), user);
 }
 
 quiz_answer_markup :: (card: Card) -> string {
-    sentence := ifx card.form == "plural" then card.plural_sentence else card.singular_sentence;
     translation := ifx card.form == "plural" then card.plural_translation else card.singular_translation;
     word := ifx card.form == "plural" then card.plural else card.singular;
     card_id := tprint("%", card.id);
-    return tprint("<div class=\"panel\" id=\"quiz-answer\"><div class=\"arabic\" lang=\"ar\" dir=\"rtl\">%</div><h2>%</h2><p class=\"arabic\" lang=\"ar\" dir=\"rtl\">%</p><p>%</p><p class=\"muted\">How well did you remember?</p><div class=\"actions ratings\"><button type=\"button\" data-on:click=\"$rating = 0; @post('/quiz/rate/%')\">Again</button><button type=\"button\" data-on:click=\"$rating = 1; @post('/quiz/rate/%')\">Hard</button><button type=\"button\" data-on:click=\"$rating = 2; @post('/quiz/rate/%')\">Good</button><button type=\"button\" data-on:click=\"$rating = 3; @post('/quiz/rate/%')\">Easy</button></div></div>", html_escape(word), html_escape(card.meaning), html_escape(sentence), html_escape(translation), card_id, card_id, card_id, card_id);
+    return tprint("<div class=\"quiz-answer\" id=\"quiz-answer\"><div class=\"arabic\" lang=\"ar\" dir=\"rtl\">%</div><h2>%</h2><p>%</p><div class=\"actions ratings\"><button type=\"button\" data-on:click=\"$rating = 0; @post('/quiz/rate/%')\">Again</button><button type=\"button\" data-on:click=\"$rating = 1; @post('/quiz/rate/%')\">Hard</button><button type=\"button\" data-on:click=\"$rating = 2; @post('/quiz/rate/%')\">Good</button><button type=\"button\" data-on:click=\"$rating = 3; @post('/quiz/rate/%')\">Easy</button></div></div>", html_escape(word), html_escape(card.meaning), html_escape(translation), card_id, card_id, card_id, card_id);
 }
 
 reveal_card :: (id: Http.Path("id", s64), request: *Http.Request) -> Http.Response {

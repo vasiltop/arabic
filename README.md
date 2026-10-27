@@ -1,4 +1,4 @@
-# Arabic Noun Studio
+# Learn Arabic
 
 A server-rendered Modern Standard Arabic vocabulary app built with Jai, Jacket, Datastar, and PostgreSQL. Learners can create a private noun bank and review singular and plural forms as separate active-recall cards.
 
@@ -70,3 +70,5 @@ Compose initializes the schema when its database volume is first created. The co
 - Datastar 1.0.4 is vendored at `static/datastar.js`; the browser needs no CDN access at runtime.
 - The selected Postgres client is synchronous, and this starter uses one HTTP worker and one connection. It is suitable for local development, not concurrent production traffic.
 - Git tracks source, migrations, configuration, and vendored dependencies with their licenses. Build output, `.env` files, local database directories, logs, and editor files are ignored. `.env` files are not loaded automatically; pass overrides through your shell environment.
+
+Use Conventional Commits for new commits; see [repository guidance](AGENTS.md). Proposed features and follow-up improvements are in the [roadmap](docs/ROADMAP.md).

@@ -22,11 +22,11 @@ button.danger { background: #a43f36; }
 .error { color: #a43f36; }
 .success { color: #185b4a; }
 #quiz-card { text-align: center; }
+.quiz-answer { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #e1ddd3; }
 .ratings { justify-content: center; }
 .ratings button { min-width: 6rem; }
 .topline { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 form.inline { display: inline; }
-footer { max-width: 62rem; margin: 2rem auto; padding: 0 1rem; color: #6c716c; font-size: .9rem; }
 @media (max-width: 600px) {
     header { align-items: flex-start; flex-direction: column; }
     nav { flex-wrap: wrap; }
