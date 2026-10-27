@@ -126,6 +126,7 @@ main :: () {
     Http.post(*app, "/nouns/{id}/edit", update_noun);
     Http.post(*app, "/nouns/{id}/delete", delete_noun);
     Http.get(*app, "/quiz", quiz_page);
+    Http.post(*app, "/quiz/extend", extend_review);
     Http.get(*app, "/quiz/reveal/{id}", reveal_card);
     Http.post(*app, "/quiz/rate/{id}", rate_card);
 

@@ -110,7 +110,7 @@ class DeckIntegration(unittest.TestCase):
             subprocess.run(["jacket", "check"], cwd=ROOT, env=cls.env, check=True)
             subprocess.run(["jacket", "build"], cwd=ROOT, env=cls.env, check=True)
             cls.start()
-            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2,3,4"
+            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2,3,4,5"
         except BaseException:
             cls.tearDownClass()
             raise
@@ -342,7 +342,7 @@ class DeckIntegration(unittest.TestCase):
         for _ in range(2):
             result = subprocess.run([str(ROOT / "build/arabic"), "--migrate"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "4")
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "5")
 
     def test_08_gender_examples_and_legacy_transfer(self):
         a = Client(self)
@@ -514,6 +514,122 @@ class DeckIntegration(unittest.TestCase):
         self.assertEqual(self.sql(f"SELECT repetitions||':'||interval_days FROM review_cards WHERE id={started}"), "1:1")
         self.assertEqual(self.schedules(entry), saved)
 
+    def extension_fields(self, client):
+        page = client.request('/quiz')[2]
+        self.assertIn('action="/quiz/extend"', page)
+        return {name: re.search(r'name="' + name + r'" value="([^"]+)"', page).group(1)
+                for name in ('card_limit', 'study_day')}
+
+    def rate_batch(self, client, count):
+        seen = []
+        for _ in range(count):
+            page = client.request('/quiz')[2]
+            match = re.search(r'/quiz/reveal/(\d+)', page)
+            self.assertIsNotNone(match, page)
+            card = int(match.group(1))
+            seen.append(card)
+            self.assertEqual(client.request(f'/quiz/rate/{card}', raw={'rating': 2})[0], 200)
+        return seen
+
+    def test_16_keep_going_batches_and_expiry(self):
+        a, b = Client(self), Client(self)
+        entries = [a.noun() for _ in range(6)]
+        cards = list(map(int, self.sql(f"SELECT c.id FROM review_cards c JOIN entries e ON e.id=c.entry_id WHERE e.user_id={a.user_id} ORDER BY c.id").splitlines()))
+        day = self.sql("SELECT (now() AT TIME ZONE 'UTC')::date::text")
+        fields = {'card_limit': '5', 'study_day': day}
+        self.assertNotIn('Keep going', a.request('/quiz')[2])
+        self.assertEqual(a.request('/quiz/extend', fields)[0], 303)
+        self.assertEqual(self.sql(f'SELECT count(*) FROM review_extensions WHERE user_id={a.user_id}'), '0')
+        self.assertEqual(self.rate_batch(a, 5), cards[:5])
+        first = self.extension_fields(a)
+        self.assertEqual(first, fields)
+        before = [self.schedules(entry) for entry in entries]
+        self.assertEqual(b.request('/quiz/extend', first)[0], 303)
+        self.assertEqual(self.sql(f'SELECT count(*) FROM review_extensions WHERE user_id={b.user_id}'), '0')
+        self.assertEqual(a.request('/quiz/extend', first)[0], 303)
+        self.assertEqual([self.schedules(entry) for entry in entries], before)
+        self.assertEqual(self.sql(f'SELECT extra_cards FROM review_extensions WHERE user_id={a.user_id}'), '5')
+        self.assertIn('12 cards · 5 due', a.request('/decks')[2])
+        self.assertEqual(self.sql(f'SELECT sum(xp) FROM review_events WHERE user_id={a.user_id}'), '50')
+        self.assertNotIn('Keep going', a.request('/quiz')[2])
+        self.assertEqual(a.request('/quiz/extend', first)[0], 303)
+        self.stop()
+        self.start()
+        self.assertEqual(self.rate_batch(a, 5), cards[5:10])
+        # Retrying the old form after the next batch is done must still be harmless.
+        self.assertEqual(a.request('/quiz/extend', first)[0], 303)
+        self.assertEqual(self.sql(f'SELECT extra_cards FROM review_extensions WHERE user_id={a.user_id}'), '5')
+        second = self.extension_fields(a)
+        self.assertEqual(second['card_limit'], '10')
+        self.assertEqual(a.request('/quiz/extend', second)[0], 303)
+        self.assertIn('12 cards · 2 due', a.request('/decks')[2])
+        self.assertEqual(self.rate_batch(a, 2), cards[10:])
+        self.assertEqual(self.sql(f'SELECT sum(xp) FROM review_events WHERE user_id={a.user_id}'), '120')
+        self.assertNotIn('Keep going', a.request('/quiz')[2])
+        self.assertEqual(a.request('/quiz/extend', second)[0], 303)
+        self.assertEqual(self.sql(f'SELECT extra_cards FROM review_extensions WHERE user_id={a.user_id}'), '10')
+        self.sql(f"UPDATE review_extensions SET study_day=study_day-1 WHERE user_id={a.user_id}; UPDATE review_cards SET due_at=now()-interval '1 minute' WHERE id IN ({','.join(map(str,cards[5:]))})")
+        self.assertIn('12 cards · 0 due', a.request('/decks')[2])
+        expired = self.extension_fields(a)
+        self.assertEqual(expired['card_limit'], '5')
+        stale_day = {**expired, 'study_day': self.sql("SELECT ((now() AT TIME ZONE 'UTC')::date-1)::text")}
+        self.assertEqual(a.request('/quiz/extend', stale_day)[0], 303)
+        self.assertIn('12 cards · 0 due', a.request('/decks')[2])
+        self.assertEqual(a.request('/quiz/extend', expired)[0], 303)
+        self.assertEqual(self.sql(f'SELECT extra_cards FROM review_extensions WHERE user_id={a.user_id}'), '5')
+        self.assertIn('12 cards · 5 due', a.request('/decks')[2])
+        self.sql(f'DELETE FROM users WHERE id={a.user_id}')
+        self.assertEqual(self.sql(f'SELECT count(*) FROM review_extensions WHERE user_id={a.user_id}'), '0')
+
+    def test_17_extension_guards_and_failure(self):
+        a = Client(self)
+        anonymous = Client(self)
+        anonymous.cookie = None
+        self.assertEqual(anonymous.request('/quiz/extend', {'card_limit': 5, 'study_day': '2026-01-01'})[0], 302)
+        self.assertNotIn('Keep going', a.request('/quiz')[2])
+        for _ in range(3):
+            a.noun()
+        self.rate_batch(a, 5)
+        fields = self.extension_fields(a)
+        self.assertEqual(a.request('/quiz/extend', {**fields, 'card_limit': 6})[0], 400)
+        self.assertEqual(a.request('/quiz/extend', {**fields, 'study_day': "x'; DROP TABLE users;--"})[0], 303)
+        a.request(f'/decks/{a.default}/enabled', {'enabled': 0})
+        self.assertNotIn('Keep going', a.request('/quiz')[2])
+        self.assertEqual(a.request('/quiz/extend', fields)[0], 303)
+        self.assertEqual(self.sql(f'SELECT count(*) FROM review_extensions WHERE user_id={a.user_id}'), '0')
+        a.request(f'/decks/{a.default}/enabled', {'enabled': 1})
+        self.sql("CREATE FUNCTION fail_test_extension() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'test extension rollback'; END$$; CREATE TRIGGER fail_test_extension BEFORE INSERT OR UPDATE ON review_extensions FOR EACH ROW EXECUTE FUNCTION fail_test_extension()")
+        try:
+            self.assertEqual(a.request('/quiz/extend', fields)[0], 500)
+            self.assertEqual(self.sql(f'SELECT count(*) FROM review_extensions WHERE user_id={a.user_id}'), '0')
+        finally:
+            self.sql('DROP TRIGGER fail_test_extension ON review_extensions; DROP FUNCTION fail_test_extension()')
+        self.assertEqual(a.request('/quiz/extend', fields)[0], 303)
+        self.rate_batch(a, 1)
+        self.assertNotIn('Keep going', a.request('/quiz')[2])
+
+    def test_18_extension_timezone(self):
+        a = Client(self)
+        for _ in range(4):
+            a.noun()
+        self.sql(f"UPDATE users SET timezone='Pacific/Kiritimati' WHERE id={a.user_id}")
+        self.rate_batch(a, 5)
+        first = self.extension_fields(a)
+        self.assertEqual(first['study_day'], self.sql("SELECT (now() AT TIME ZONE 'Pacific/Kiritimati')::date::text"))
+        self.assertEqual(a.request('/quiz/extend', first)[0], 303)
+        self.rate_batch(a, 3)
+        self.sql(f"UPDATE users SET timezone='Pacific/Honolulu' WHERE id={a.user_id}")
+        # Make only the extra cards due, keeping the base five slots reserved.
+        self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 minute' WHERE id IN (SELECT c.id FROM review_cards c JOIN entries e ON e.id=c.entry_id WHERE e.user_id={a.user_id} ORDER BY c.id OFFSET 5)")
+        second = self.extension_fields(a)
+        self.assertNotEqual(second['study_day'], first['study_day'])
+        self.assertEqual(second['study_day'], self.sql("SELECT (now() AT TIME ZONE 'Pacific/Honolulu')::date::text"))
+        self.assertEqual(second['card_limit'], '5')
+        self.assertEqual(a.request('/quiz/extend', first)[0], 303)
+        self.assertEqual(self.sql(f"SELECT study_day::text FROM review_extensions WHERE user_id={a.user_id}"), first['study_day'])
+        self.assertEqual(a.request('/quiz/extend', second)[0], 303)
+        self.assertEqual(self.sql(f"SELECT study_day::text FROM review_extensions WHERE user_id={a.user_id}"), second['study_day'])
+
     def profile_value(self, html, name):
         match = re.search(r'id="' + re.escape(name) + r'">([^<]*)<', html)
         self.assertIsNotNone(match, name)
@@ -650,11 +766,13 @@ class DeckIntegration(unittest.TestCase):
         self.assertEqual(self.sql("SELECT e.id||':'||e.user_id||':'||e.type||':'||d.enabled::text FROM entries e JOIN decks d ON d.id=e.deck_id"), "200:100:noun:true")
         self.assertEqual(self.sql("SELECT singular FROM nouns WHERE id=200"), "كِتَابٌ")
         self.assertEqual(self.sql("SELECT gender FROM nouns WHERE id=200"), "unknown")
+        self.assertEqual(self.sql("SELECT count(*) FROM review_extensions"), "0")
+
         self.assertEqual(self.sql("SELECT timezone FROM users WHERE id=100"), "UTC")
         self.assertEqual(self.sql("SELECT count(*) FROM review_events"), "0")
         self.stop()
         self.start()
-        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "4")
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "5")
 
 
 if __name__ == "__main__":
