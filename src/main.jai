@@ -5,6 +5,8 @@ Postgres :: #import "Postgres";
 Datastar :: #import "Datastar";
 File :: #import "File";
 String :: #import "String";
+Json :: #import "Extensions/Json";
+Base64 :: #import "Base64";
 
 libc :: #system_library "libc";
 libargon2 :: #system_library "argon2";
@@ -21,6 +23,12 @@ RAND_bytes :: (buffer: *u8, length: s32) -> s32 #foreign libcrypto;
 SHA256 :: (data: *u8, length: u64, digest: *u8) -> *u8 #foreign libcrypto;
 
 #load "application.jai";
+#load "storage.jai";
+#load "entries.jai";
+#load "decks.jai";
+#load "nouns.jai";
+#load "reviews.jai";
+#load "transfers.jai";
 #load "development.jai";
 
 environment_value :: (name: string) -> string {
@@ -31,6 +39,8 @@ environment_value :: (name: string) -> string {
 }
 
 main :: () {
+    migrate_only := false;
+    for argument: get_command_line_arguments() if argument == "--migrate" migrate_only = true;
     connection_string := environment_value("DATABASE_URL");
     local_database_mode = connection_string.count == 0;
     database: *Postgres.PGconn;
@@ -48,6 +58,15 @@ main :: () {
     }
     defer Postgres.disconnect(database);
     database_connection = database;
+
+    if migrate_only {
+        if !local_database_mode && !apply_migrations(database) {
+            exit(1);
+            return;
+        }
+        print("Database migrations are up to date.\n");
+        return;
+    }
 
     bundle, read_ok := File.read_entire_file("static/datastar.js");
     if !read_ok {
@@ -74,6 +93,7 @@ main :: () {
     if app.config.address.count == 0 app.config.address = "127.0.0.1:8080";
     app.config.threads = 1;
     app.config.log_requests = true;
+    app.config.max_body_size = 8 * 1024 * 1024;
 
     Http.get(*app, "/", home);
     Http.get(*app, "/static/datastar.js", datastar_asset);
@@ -83,6 +103,19 @@ main :: () {
     Http.get(*app, "/login", login_page);
     Http.post(*app, "/login", login_account);
     Http.post(*app, "/logout", logout_account);
+    Http.get(*app, "/decks", decks_page);
+    Http.get(*app, "/decks/import", import_page);
+    Http.post(*app, "/decks/import/preview", preview_import);
+    Http.post(*app, "/decks/import/confirm", confirm_import);
+    Http.get(*app, "/decks/import/{token}", import_preview_page);
+    Http.post(*app, "/decks/import/{token}/refresh", refresh_import);
+    Http.get(*app, "/decks/{id}/export", export_deck);
+    Http.post(*app, "/decks", create_deck);
+    Http.get(*app, "/decks/{id}/edit", edit_deck_page);
+    Http.post(*app, "/decks/{id}/edit", rename_deck);
+    Http.post(*app, "/decks/{id}/enabled", set_deck_enabled);
+    Http.get(*app, "/decks/{id}/delete", delete_deck_page);
+    Http.post(*app, "/decks/{id}/delete", delete_deck);
     Http.get(*app, "/nouns", nouns_page);
     Http.get(*app, "/nouns/new", new_noun_page);
     Http.post(*app, "/nouns", create_noun);

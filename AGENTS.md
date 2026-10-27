@@ -4,3 +4,4 @@
 - The product name is **Learn Arabic**. Keep interface copy short and useful; retain clear field labels, actions, validation errors, and exercise cues.
 - Keep the Jai backend and Datastar server-rendered architecture. Build configuration belongs in `build.jai`; local database setup runs when the app starts.
 - Run `jacket check` and `jacket build` for Jai changes. Check affected user flows when behavior changes. Do not require shell exports or add wrapper scripts for normal local startup.
+- Run `python3 tests/decks.py` when changing decks, imports, review eligibility, or migrations. It creates a disposable PostgreSQL cluster and must not use the normal app database.

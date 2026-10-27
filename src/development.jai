@@ -55,29 +55,6 @@ dev_connect :: (connection_string: string) -> *Postgres.PGconn, bool {
     return connection, connected;
 }
 
-dev_apply_schema :: (connection: *Postgres.PGconn) -> bool {
-    schema, read_ok := File.read_entire_file("migrations/001_initial.sql");
-    if !read_ok {
-        startup_error("Cannot read migrations/001_initial.sql. Run `jacket run` from the project root.");
-        return false;
-    }
-    defer free(schema);
-    query := tprint("BEGIN;\nSET LOCAL client_min_messages=warning;\n%\nCOMMIT;", schema);
-    result := Postgres.PQexec(connection, temp_c_string(query));
-    if result == null {
-        startup_error("Could not apply the local database schema.");
-        return false;
-    }
-    defer Postgres.PQclear(result);
-    if Postgres.PQresultStatus(result) != .PGRES_COMMAND_OK {
-        startup_error(tprint("Could not apply the local database schema: %", to_string(Postgres.PQresultErrorMessage(result))));
-        rollback := Postgres.PQexec(connection, "ROLLBACK;");
-        if rollback Postgres.PQclear(rollback);
-        return false;
-    }
-    return true;
-}
-
 dev_prepare_database :: (port: s32) -> bool {
     username, username_ok := Dev_System.get_username();
     if !username_ok {
@@ -127,7 +104,7 @@ start_local_database :: () -> *Postgres.PGconn, bool {
     connection_string := tprint("postgres://arabic:arabic@127.0.0.1:%/arabic?connect_timeout=3", port);
     database, connected := dev_connect(connection_string);
     if connected {
-        if dev_apply_schema(database) {
+        if apply_migrations(database) {
             print("Local PostgreSQL ready on 127.0.0.1:% (existing data preserved).\n", port);
             return database, true;
         }
@@ -187,7 +164,7 @@ start_local_database :: () -> *Postgres.PGconn, bool {
         Postgres.disconnect(database);
         return null, false;
     }
-    if !dev_apply_schema(database) {
+    if !apply_migrations(database) {
         Postgres.disconnect(database);
         return null, false;
     }

@@ -1,0 +1,364 @@
+"""Integration checks using a disposable local PostgreSQL 17 cluster.
+
+Run from the repository root: python3 tests/decks.py
+Requires the same Homebrew dependencies as `jacket run`; never uses the normal app database.
+"""
+import base64
+import copy
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import signal
+import socket
+import subprocess
+import tempfile
+import time
+import unittest
+import urllib.parse
+import uuid
+
+ROOT = Path(__file__).resolve().parents[1]
+PG = Path(subprocess.check_output(["brew", "--prefix", "postgresql@17"], text=True).strip()) / "bin"
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def literal(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+DATA = dict(singular="كِتَابٌ", plural="كُتُبٌ", meaning='book "quoted" <script>not code</script>',
+            singular_sentence="هَذَا كِتَابٌ جَدِيدٌ.", singular_translation='This is a "new" book.',
+            plural_sentence="هَذِهِ كُتُبٌ جَدِيدَةٌ.", plural_translation="These are new books — yes!")
+
+
+class Client:
+    def __init__(self, suite):
+        self.suite, self.cookie = suite, None
+        self.username = "deckqa_" + secrets.token_hex(5)
+        code, _, _ = self.request("/register", {"username": self.username, "password": "DeckCheckPass2026"})
+        assert code == 303, code
+        self.user_id = int(suite.sql(f"SELECT id FROM users WHERE username={literal(self.username)}"))
+        self.default = int(suite.sql(f"SELECT id FROM decks WHERE user_id={self.user_id} AND is_default"))
+
+    def request(self, path, fields=None, raw=None):
+        headers, body = {}, raw
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+        if fields is not None:
+            body = urllib.parse.urlencode(fields, doseq=True)
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        elif raw is not None:
+            body = json.dumps(raw, ensure_ascii=False).encode()
+            headers["Content-Type"] = "application/json"
+        conn = http.client.HTTPConnection("127.0.0.1", self.suite.web_port, timeout=20)
+        conn.request("POST" if body is not None else "GET", path, body, headers)
+        response = conn.getresponse()
+        code, result_headers, text = response.status, dict(response.getheaders()), response.read().decode()
+        conn.close()
+        if "Set-Cookie" in result_headers:
+            self.cookie = result_headers["Set-Cookie"].split(";")[0]
+        return code, result_headers, text
+
+    def deck(self, name):
+        assert self.request("/decks", {"name": name})[0] == 303
+        return int(self.suite.sql(f"SELECT id FROM decks WHERE user_id={self.user_id} AND name={literal(name)}"))
+
+    def noun(self, deck=None, data=None):
+        assert self.request("/nouns", {**(data or DATA), "deck_id": deck or self.default})[0] == 303
+        return int(self.suite.sql(f"SELECT max(id) FROM entries WHERE user_id={self.user_id}"))
+
+    def export(self, deck):
+        code, headers, text = self.request(f"/decks/{deck}/export")
+        assert code == 200 and "attachment" in headers["Content-Disposition"]
+        return json.loads(text)
+
+    def preview(self, document, expected_error=None):
+        text = document if isinstance(document, bytes) else json.dumps(document, ensure_ascii=False).encode()
+        code, _, response = self.request("/decks/import/preview", raw={"files": [{"name": "deck.json", "mime": "application/json", "contents": base64.b64encode(text).decode()}]})
+        assert code == 200, (code, response[:500])
+        if expected_error:
+            assert expected_error in response, response[:1000]
+            return None
+        match = re.search(r'name="token" value="([a-f0-9]{64})"', response)
+        assert match, response[:2000]
+        return match.group(1), response
+
+    def confirm(self, token, name="Imported", updates=(), moves=()):
+        return self.request("/decks/import/confirm", {"token": token, "name": name, "updates": updates, "moves": moves})
+
+
+class DeckIntegration(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.work = Path(tempfile.mkdtemp(prefix="learn-arabic-decks-"))
+        cls.pg_port, cls.web_port = free_port(), free_port()
+        cls.env = os.environ.copy()
+        for key in ("DATABASE_URL", "LIBRARY_PATH", "COOKIE_SECURE"):
+            cls.env.pop(key, None)
+        cls.env.update(DEV_PGDATA=str(cls.work / "postgres data"), DEV_PGPORT=str(cls.pg_port), LISTEN_ADDRESS=f"127.0.0.1:{cls.web_port}")
+        cls.proc, cls.log = None, None
+        try:
+            subprocess.run(["jacket", "check"], cwd=ROOT, env=cls.env, check=True)
+            subprocess.run(["jacket", "build"], cwd=ROOT, env=cls.env, check=True)
+            cls.start()
+            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2"
+        except BaseException:
+            cls.tearDownClass()
+            raise
+
+    @classmethod
+    def start(cls):
+        cls.log = cls.work / f"app-{time.time_ns()}.log"
+        with cls.log.open("w") as output:
+            cls.proc = subprocess.Popen([str(ROOT / "build/arabic")], cwd=ROOT, env=cls.env, stdout=output, stderr=subprocess.STDOUT)
+        for _ in range(200):
+            if cls.proc.poll() is not None:
+                raise AssertionError(cls.log.read_text())
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", cls.web_port, timeout=.3)
+                conn.request("GET", "/")
+                response = conn.getresponse()
+                response.read()
+                conn.close()
+                if response.status == 200:
+                    return
+            except (OSError, http.client.HTTPException):
+                pass
+            time.sleep(.1)
+        raise AssertionError(cls.log.read_text())
+
+    @classmethod
+    def stop(cls):
+        if cls.proc and cls.proc.poll() is None:
+            cls.proc.send_signal(signal.SIGINT)
+            cls.proc.wait(timeout=10)
+
+    @classmethod
+    def sql(cls, query, admin=False, database=None):
+        args = [str(PG / "psql"), "-h", "/tmp" if admin else "127.0.0.1", "-p", str(cls.pg_port), "-d", database or ("postgres" if admin else "arabic"), "-v", "ON_ERROR_STOP=1", "-Atc", query]
+        if not admin:
+            args += ["-U", "arabic"]
+        result = subprocess.run(args, env={**cls.env, "PGPASSWORD": "arabic"}, capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stop()
+        data = cls.work / "postgres data"
+        if (data / "postmaster.pid").exists():
+            subprocess.run([str(PG / "pg_ctl"), "-D", str(data), "-m", "fast", "-w", "stop"], capture_output=True)
+        if not (data / "postmaster.pid").exists():
+            shutil.rmtree(cls.work)
+
+    def schedules(self, entry_id):
+        return self.sql(f"SELECT row_to_json(c)::text FROM review_cards c WHERE entry_id={entry_id} ORDER BY id")
+
+    def test_01_decks_and_ownership(self):
+        a, b = Client(self), Client(self)
+        food = a.deck("Food")
+        entry = a.noun(food)
+        saved = self.schedules(entry)
+        self.assertIn(f'value="{food}" selected', a.request(f"/nouns/new?deck={food}")[2])
+        self.assertEqual(a.request(f"/decks/{food}/edit", {"name": "طعام"})[0], 303)
+        self.assertIn("طعام", a.request("/decks")[2])
+        self.assertEqual(a.request(f"/nouns/{entry}/edit", {**DATA, "deck_id": a.default})[0], 303)
+        self.assertEqual(self.schedules(entry), saved)
+        self.assertEqual(a.request(f"/nouns/{entry}/edit", {**DATA, "deck_id": food})[0], 303)
+        for path, form in [(f"/decks/{food}/edit", None), (f"/decks/{food}/export", None), (f"/decks/{food}/enabled", {"enabled": 0}), (f"/decks/{food}/delete", {}), (f"/nouns?deck={food}", None), (f"/nouns/{entry}/edit", None)]:
+            self.assertEqual(b.request(path, form)[0], 404, path)
+        self.assertEqual(b.request("/nouns", {**DATA, "deck_id": food})[0], 404)
+        self.assertEqual(a.request(f"/decks/{a.default}/delete", {})[0], 409)
+        self.assertEqual(a.request(f"/decks/{food}/delete", {})[0], 303)
+        self.assertEqual(int(self.sql(f"SELECT deck_id FROM entries WHERE id={entry}")), a.default)
+        self.assertEqual(self.schedules(entry), saved)
+
+    def test_02_activation_and_stale_quiz(self):
+        a = Client(self)
+        entry = a.noun()
+        paused = a.deck("Paused")
+        paused_entry = a.noun(paused)
+        a.request(f"/decks/{paused}/enabled", {"enabled": 0})
+        paused_schedule = self.schedules(paused_entry)
+        prompt = a.request("/quiz")[2]
+        card = re.search(r"/quiz/reveal/(\d+)", prompt).group(1)
+        saved = self.schedules(entry)
+        self.assertEqual(a.request(f"/decks/{a.default}/enabled", {"enabled": 0})[0], 303)
+        self.assertIn("No active decks", a.request("/quiz")[2])
+        self.assertIn("No active decks", a.request(f"/quiz/reveal/{card}")[2])
+        self.assertIn("No active decks", a.request(f"/quiz/rate/{card}", raw={"rating": 2})[2])
+        self.assertEqual(self.schedules(entry), saved)
+        a.request(f"/decks/{a.default}/enabled", {"enabled": 1})
+        self.assertIn("/quiz/reveal/", a.request("/quiz")[2])
+        for _ in range(2):
+            card = re.search(r"/quiz/reveal/(\d+)", a.request("/quiz")[2]).group(1)
+            self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 2})[0], 200)
+        self.assertIn("No reviews due", a.request("/quiz")[2])
+        a.request(f"/decks/{paused}/enabled", {"enabled": 1})
+        self.assertIn("/quiz/reveal/", a.request("/quiz")[2])
+        self.assertEqual(self.schedules(paused_entry), paused_schedule)
+
+    def shared_fixture(self):
+        a, b = Client(self), Client(self)
+        source = a.deck("Shared")
+        entry = a.noun(source)
+        self.sql(f"UPDATE review_cards SET interval_days=20,repetitions=4,ease_factor=2.1,due_at=now()+interval '20 days' WHERE entry_id={entry}")
+        document = a.export(source)
+        token, preview = b.preview(document)
+        self.assertIn("1 new", preview)
+        self.assertNotIn("<script>not code</script>", preview)
+        self.assertEqual(b.confirm(token, "Shared")[0], 303)
+        target = int(self.sql(f"SELECT id FROM decks WHERE user_id={b.user_id} AND uid={literal(document['deck']['id'])}::uuid"))
+        imported = int(self.sql(f"SELECT id FROM entries WHERE user_id={b.user_id} AND uid={literal(document['entries'][0]['id'])}::uuid"))
+        return a, b, source, target, imported, document
+
+    def test_03_roundtrip_and_repeat(self):
+        a, b, source, target, entry, document = self.shared_fixture()
+        self.assertEqual(document["entries"][0]["data"], DATA)
+        self.assertEqual(set(document), {"format", "version", "deck", "entries"})
+        self.assertEqual(set(document["entries"][0]), {"id", "type", "data"})
+        self.assertEqual(self.sql(f"SELECT enabled FROM decks WHERE id={target}"), "f")
+        self.assertEqual(self.sql(f"SELECT string_agg(interval_days||':'||repetitions,',' ORDER BY id) FROM review_cards WHERE entry_id={entry}"), "0:0,0:0")
+        self.assertIn("No reviews due", b.request("/quiz")[2])
+        b.request(f"/decks/{target}/edit", {"name": "My shared deck"})
+        b.request(f"/decks/{target}/enabled", {"enabled": 1})
+        before = self.schedules(entry)
+        token, preview = b.preview(document)
+        self.assertIn("1 unchanged", preview)
+        self.assertEqual(b.confirm(token)[0], 303)
+        self.assertEqual(b.confirm(token)[0], 409)
+        self.assertEqual(self.sql(f"SELECT count(*) FROM entries WHERE deck_id={target}"), "1")
+        self.assertEqual(self.sql(f"SELECT name||':'||enabled::text FROM decks WHERE id={target}"), "My shared deck:true")
+        self.assertEqual(self.schedules(entry), before)
+        self.assertEqual(b.export(target)["entries"], document["entries"])
+        self.assertEqual(b.request(f"/decks/{source}/export")[0], 404)
+
+    def test_04_merge_move_stale_and_expiry(self):
+        _, b, _, target, entry, document = self.shared_fixture()
+        self.sql(f"UPDATE review_cards SET interval_days=6,repetitions=2 WHERE entry_id={entry}")
+        before = self.schedules(entry)
+        changed = copy.deepcopy(document)
+        changed["entries"][0]["data"]["meaning"] = "updated meaning"
+        changed["entries"].append({"id": str(uuid.uuid4()), "type": "noun", "data": {**DATA, "meaning": "another noun"}})
+        token, preview = b.preview(changed)
+        self.assertIn("1 changed", preview)
+        self.assertNotIn('name="updates" checked', preview)
+        self.assertEqual(b.confirm(token)[0], 303)
+        self.assertEqual(self.sql(f"SELECT meaning FROM nouns WHERE id={entry}"), DATA["meaning"])
+        token, _ = b.preview(changed)
+        self.assertEqual(b.confirm(token, updates=[document["entries"][0]["id"]])[0], 303)
+        self.assertEqual(self.sql(f"SELECT meaning FROM nouns WHERE id={entry}"), "updated meaning")
+        self.assertEqual(self.schedules(entry), before)
+        other = b.deck("Elsewhere")
+        updated_data = changed["entries"][0]["data"]
+        b.request(f"/nouns/{entry}/edit", {**updated_data, "deck_id": other})
+        token, preview = b.preview(changed)
+        self.assertIn("1 moves", preview)
+        self.assertEqual(b.confirm(token)[0], 303)
+        self.assertEqual(int(self.sql(f"SELECT deck_id FROM entries WHERE id={entry}")), other)
+        token, _ = b.preview(changed)
+        self.assertEqual(b.confirm(token, moves=[document["entries"][0]["id"]])[0], 303)
+        self.assertEqual(int(self.sql(f"SELECT deck_id FROM entries WHERE id={entry}")), target)
+        self.assertEqual(self.schedules(entry), before)
+        token, _ = b.preview(changed)
+        b.request(f"/nouns/{entry}/edit", {**updated_data, "meaning": "new local edit", "deck_id": target})
+        self.assertEqual(b.confirm(token)[0], 409)
+        self.assertIn("Refresh preview", b.request(f"/decks/import/{token}")[2])
+        self.assertEqual(b.request(f"/decks/import/{token}/refresh", {})[0], 303)
+        self.assertEqual(b.confirm(token)[0], 303)
+        token, _ = b.preview(changed)
+        self.sql(f"UPDATE deck_imports SET expires_at=now()-interval '1 second' WHERE token={literal(token)}")
+        self.assertEqual(b.confirm(token)[0], 410)
+        self.assertEqual(b.request(f"/decks/import/{token}")[0], 410)
+        attacker = Client(self)
+        self.assertEqual(attacker.confirm(token)[0], 404)
+        self.assertEqual(attacker.request(f"/decks/import/{token}")[0], 404)
+        token, _ = b.preview(changed)
+        self.assertEqual(b.confirm(token, updates=[str(uuid.uuid4())])[0], 400)
+
+    def test_05_validation_and_name_conflicts(self):
+        a = Client(self)
+        a.noun()
+        document = a.export(a.default)
+        b = Client(self)
+        # The imported default deck is an ordinary, disabled deck with an editable unique name.
+        token, preview = b.preview(document)
+        self.assertIn("Default (imported", preview)
+        self.assertEqual(b.confirm(token, "Default")[0], 409)
+        self.assertEqual(b.confirm(token, "Separate default")[0], 303)
+        for change, error in [(lambda d: d.update(version=2), "Unsupported deck format"),
+                              (lambda d: d["entries"][0].update(type="verb"), "unsupported type"),
+                              (lambda d: d["entries"].append(copy.deepcopy(d["entries"][0])), "duplicate entry IDs"),
+                              (lambda d: d["entries"][0]["data"].update(singular=" "), "invalid noun fields"),
+                              (lambda d: d["entries"][0].update(id="not-a-uuid"), "UUID")]:
+            invalid = copy.deepcopy(document)
+            change(invalid)
+            b.preview(invalid, error)
+        b.preview(b'{invalid', "Invalid deck file")
+        b.preview(b'\xff', "valid UTF-8")
+        b.preview(b'x' * (5 * 1024 * 1024 + 1), "5 MiB")
+        # A declared oversized body is rejected before upload, so do not send 8 MiB after
+        # the server has already closed the connection with its 413 response.
+        conn = http.client.HTTPConnection("127.0.0.1", self.web_port, timeout=5)
+        try:
+            conn.putrequest("POST", "/decks/import/preview")
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Content-Length", str(8 * 1024 * 1024 + 1))
+            conn.endheaders()
+            response = conn.getresponse()
+            self.assertEqual(response.status, 413)
+            response.read()
+        finally:
+            conn.close()
+        self.assertEqual(self.sql(f"SELECT count(*) FROM entries WHERE user_id={b.user_id}"), "1")
+
+    def test_06_atomic_failure(self):
+        a = Client(self)
+        doc = {"format": "learn-arabic-deck", "version": 1, "deck": {"id": str(uuid.uuid4()), "name": "Rollback"}, "entries": [
+            {"id": str(uuid.uuid4()), "type": "noun", "data": DATA},
+            {"id": str(uuid.uuid4()), "type": "noun", "data": {**DATA, "singular": "FAIL_IMPORT_TEST"}}]}
+        token, _ = a.preview(doc)
+        self.sql("CREATE FUNCTION fail_test_import() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.singular='FAIL_IMPORT_TEST' THEN RAISE EXCEPTION 'intentional test failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_test_import BEFORE INSERT ON nouns FOR EACH ROW EXECUTE FUNCTION fail_test_import()")
+        try:
+            self.assertEqual(a.confirm(token, "Rollback")[0], 500)
+            self.assertEqual(self.sql(f"SELECT count(*) FROM entries WHERE user_id={a.user_id}"), "0")
+            self.assertEqual(self.sql(f"SELECT count(*) FROM decks WHERE user_id={a.user_id}"), "1")
+            self.assertEqual(self.sql(f"SELECT consumed_at IS NULL FROM deck_imports WHERE token={literal(token)}"), "t")
+        finally:
+            self.sql("DROP TRIGGER fail_test_import ON nouns; DROP FUNCTION fail_test_import()")
+        self.assertEqual(a.confirm(token, "Rollback")[0], 303)
+
+    def test_07_explicit_external_migrations(self):
+        self.sql("CREATE DATABASE explicit_migration_test OWNER arabic", admin=True)
+        env = {**self.env, "DATABASE_URL": f"postgres://arabic:arabic@127.0.0.1:{self.pg_port}/explicit_migration_test"}
+        for _ in range(2):
+            result = subprocess.run([str(ROOT / "build/arabic"), "--migrate"], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "2")
+
+    def test_99_legacy_migration(self):
+        self.stop()
+        self.sql("ALTER DATABASE arabic RENAME TO feature_test_data", admin=True)
+        self.sql("CREATE DATABASE arabic OWNER arabic", admin=True)
+        subprocess.run([str(PG / "psql"), "-h", "127.0.0.1", "-p", str(self.pg_port), "-U", "arabic", "-d", "arabic", "-v", "ON_ERROR_STOP=1", "-f", str(ROOT / "migrations/001_initial.sql")], env={**self.env, "PGPASSWORD": "arabic"}, check=True, capture_output=True)
+        self.sql("DROP TABLE schema_migrations; INSERT INTO users(id,username,password_hash) VALUES(100,'legacy','fixture'); INSERT INTO nouns(id,user_id,singular,plural,meaning,singular_sentence,singular_translation,plural_sentence,plural_translation) VALUES(200,100,'كِتَابٌ','كُتُبٌ','book','هَذَا كِتَابٌ','This is a book','هَذِهِ كُتُبٌ','These are books'); INSERT INTO review_cards(id,noun_id,form,due_at,interval_days,ease_factor,repetitions,last_reviewed_at) VALUES(300,200,'singular','2026-01-01',15,2.2,3,'2025-12-01'),(301,200,'plural','2026-02-01',20,2.4,4,'2025-12-02')")
+        before = self.sql("SELECT id||':'||due_at||':'||interval_days||':'||ease_factor||':'||repetitions||':'||last_reviewed_at FROM review_cards ORDER BY id")
+        self.start()
+        self.assertEqual(self.sql("SELECT id||':'||due_at||':'||interval_days||':'||ease_factor||':'||repetitions||':'||last_reviewed_at FROM review_cards ORDER BY id"), before)
+        self.assertEqual(self.sql("SELECT e.id||':'||e.user_id||':'||e.type||':'||d.enabled::text FROM entries e JOIN decks d ON d.id=e.deck_id"), "200:100:noun:true")
+        self.assertEqual(self.sql("SELECT singular FROM nouns WHERE id=200"), "كِتَابٌ")
+        self.stop()
+        self.start()
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "2")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

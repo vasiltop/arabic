@@ -22,6 +22,11 @@
 *.pid
 *.pid.lock
 
+# Python integration-test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # macOS and editor files
 .DS_Store
 ._*
