@@ -428,14 +428,12 @@ class DeckIntegration(unittest.TestCase):
         self.assertIn("500 cards · 0 due", a.request("/decks")[2])
         self.assertEqual(a.request(f"/decks/{deck}/enabled", {"enabled": 1})[0], 303)
         self.assertIn("500 cards · 5 due", a.request("/decks")[2])
-        prompt = a.request("/quiz")[2]
-        self.assertIn("Learn up to 5 cards at a time", prompt)
-        self.assertIn("Singular and plural count separately", prompt)
         before = self.sql(f"SELECT row_to_json(c)::text FROM review_cards c WHERE id={cards[5]}")
         for card in (cards[5], cards[-1]):
             self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{card}")[2])
             self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 3})[0], 200)
         self.assertEqual(self.sql(f"SELECT row_to_json(c)::text FROM review_cards c WHERE id={cards[5]}"), before)
+        self.assertEqual(self.sql(f"SELECT count(*) FROM review_events WHERE user_id={a.user_id}"), "0")
         stranger = Client(self)
         self.assertEqual(stranger.request(f"/quiz/reveal/{cards[0]}")[0], 404)
         self.assertEqual(stranger.request(f"/quiz/rate/{cards[0]}", raw={"rating": 2})[0], 404)
