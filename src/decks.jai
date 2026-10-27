@@ -68,7 +68,6 @@ decks_page :: (request: *Http.Request) -> Http.Response {
     b: String_Builder;
     defer free_buffers(*b);
     append(*b, "<section class=\"topline\"><h1>Decks</h1><a class=\"button secondary\" href=\"/decks/import\">Import</a></section>");
-    append(*b, "<p class=\"muted\">Learn up to 5 cards at a time across enabled decks. Due counts include only cards ready to review.</p>");
     append(*b, "<form class=\"actions deck-create\" action=\"/decks\" method=\"post\"><label class=\"sr-only\" for=\"deck-name\">Deck name</label><input id=\"deck-name\" name=\"name\" placeholder=\"Deck name\" maxlength=\"100\" required><button type=\"submit\">Create deck</button></form>");
     for deck: decks {
         append(*b, tprint("<section class=\"panel deck-row\"><div class=\"topline\"><h2><a href=\"/nouns?deck=%\">%</a></h2><form action=\"/decks/%/enabled\" method=\"post\"><input type=\"hidden\" name=\"enabled\" value=\"%\"><button type=\"submit\" class=\"%\" aria-label=\"% %\">%</button></form></div><p class=\"muted\">% cards · % due%</p>",

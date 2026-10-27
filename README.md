@@ -35,6 +35,18 @@ jacket build
 
 The executable is written to `build/arabic`.
 
+## Profile and progress
+
+Open **Profile** to see your private practice level, XP, total and today's reviews, self-rated successful recall, current and best streaks, and a 14-day activity chart. Every accepted review earns **10 XP**, including Again. Revealing an answer or repeating an already-saved submission earns no XP. Successful recall means a rating of Hard, Good, or Easy; it does not affect XP.
+
+Start at level 1. Level 2 costs 100 XP, then each following level costs 50 XP more: 150, 200, 250, and so on. The review page shows earned XP and level-ups. History and XP begin with the profile update; earlier review totals cannot be reconstructed. Deleting vocabulary preserves earned XP and review history.
+
+Daily statistics and streaks use the timezone saved on your profile, initially UTC. **Use browser timezone** suggests your device's timezone; select **Save timezone** to apply it. Changing the timezone recalculates historical study days. Any completed review counts toward a streak, and yesterday's streak stays current until the end of today.
+
+## Development workflow
+
+Start each new change task in a fresh worktree from committed `main` with a new `codex/` branch. Leave unrelated edits in their original checkout. Use Conventional Commits, run the relevant verification commands, then push and open a pull request targeting `main` before handoff. Leave merging to the user. See [repository guidance](AGENTS.md) for future-session instructions.
+
 ## Configuration
 
 | Variable | Default and behavior |
@@ -85,4 +97,4 @@ jacket build
 python3 tests/decks.py
 ```
 
-The integration suite creates and removes its own temporary PostgreSQL cluster. It checks migration of populated databases, deck ownership, activation, noun moves, import/export round trips, stale previews, validation, rollback, grammatical gender, and both example displays. It does not use the normal app database.
+The integration suite creates and removes its own temporary PostgreSQL cluster. It checks migration of populated databases, deck ownership, activation, noun moves, import/export round trips, stale previews, validation, rollback, grammatical gender, both example displays, profile privacy, atomic review history and XP, level thresholds, timezone boundaries, and streaks. It does not use the normal app database.

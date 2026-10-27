@@ -28,6 +28,7 @@ SHA256 :: (data: *u8, length: u64, digest: *u8) -> *u8 #foreign libcrypto;
 #load "decks.jai";
 #load "nouns.jai";
 #load "reviews.jai";
+#load "profile.jai";
 #load "transfers.jai";
 #load "development.jai";
 
@@ -103,6 +104,8 @@ main :: () {
     Http.get(*app, "/login", login_page);
     Http.post(*app, "/login", login_account);
     Http.post(*app, "/logout", logout_account);
+    Http.get(*app, "/profile", profile_page);
+    Http.post(*app, "/profile/timezone", save_profile_timezone);
     Http.get(*app, "/decks", decks_page);
     Http.get(*app, "/decks/import", import_page);
     Http.post(*app, "/decks/import/preview", preview_import);

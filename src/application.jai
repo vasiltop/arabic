@@ -94,7 +94,7 @@ layout :: (title: string, content: string, user: User = .{}) -> string {
     append(*output, "<script type=\"module\" src=\"/static/datastar.js\"></script><link rel=\"stylesheet\" href=\"/static/site.css\"></head><body>");
     append(*output, "<header><a href=\"/\"><strong>Learn Arabic</strong></a><nav>");
     if user.id {
-        append(*output, "<a href=\"/decks\">Decks</a><a href=\"/nouns\">Nouns</a><a href=\"/quiz\">Review</a><span>");
+        append(*output, "<a href=\"/decks\">Decks</a><a href=\"/nouns\">Nouns</a><a href=\"/quiz\">Review</a><a href=\"/profile\">Profile</a><span>");
         append(*output, html_escape(user.username));
         append(*output, "</span><form action=\"/logout\" method=\"post\"><button class=\"secondary\" type=\"submit\">Sign out</button></form>");
     } else {
