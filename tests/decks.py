@@ -110,7 +110,7 @@ class DeckIntegration(unittest.TestCase):
             subprocess.run(["jacket", "check"], cwd=ROOT, env=cls.env, check=True)
             subprocess.run(["jacket", "build"], cwd=ROOT, env=cls.env, check=True)
             cls.start()
-            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2,3,5"
+            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2,3,4,5"
         except BaseException:
             cls.tearDownClass()
             raise
@@ -342,7 +342,7 @@ class DeckIntegration(unittest.TestCase):
         for _ in range(2):
             result = subprocess.run([str(ROOT / "build/arabic"), "--migrate"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "4")
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "5")
 
     def test_08_gender_examples_and_legacy_transfer(self):
         a = Client(self)
@@ -433,6 +433,7 @@ class DeckIntegration(unittest.TestCase):
             self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{card}")[2])
             self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 3})[0], 200)
         self.assertEqual(self.sql(f"SELECT row_to_json(c)::text FROM review_cards c WHERE id={cards[5]}"), before)
+        self.assertEqual(self.sql(f"SELECT count(*) FROM review_events WHERE user_id={a.user_id}"), "0")
         stranger = Client(self)
         self.assertEqual(stranger.request(f"/quiz/reveal/{cards[0]}")[0], 404)
         self.assertEqual(stranger.request(f"/quiz/rate/{cards[0]}", raw={"rating": 2})[0], 404)
@@ -530,7 +531,7 @@ class DeckIntegration(unittest.TestCase):
             self.assertEqual(client.request(f'/quiz/rate/{card}', raw={'rating': 2})[0], 200)
         return seen
 
-    def test_11_keep_going_batches_and_expiry(self):
+    def test_16_keep_going_batches_and_expiry(self):
         a, b = Client(self), Client(self)
         entries = [a.noun() for _ in range(6)]
         cards = list(map(int, self.sql(f"SELECT c.id FROM review_cards c JOIN entries e ON e.id=c.entry_id WHERE e.user_id={a.user_id} ORDER BY c.id").splitlines()))
@@ -549,6 +550,7 @@ class DeckIntegration(unittest.TestCase):
         self.assertEqual([self.schedules(entry) for entry in entries], before)
         self.assertEqual(self.sql(f'SELECT extra_cards FROM review_extensions WHERE user_id={a.user_id}'), '5')
         self.assertIn('12 cards · 5 due', a.request('/decks')[2])
+        self.assertEqual(self.sql(f'SELECT sum(xp) FROM review_events WHERE user_id={a.user_id}'), '50')
         self.assertNotIn('Keep going', a.request('/quiz')[2])
         self.assertEqual(a.request('/quiz/extend', first)[0], 303)
         self.stop()
@@ -562,6 +564,7 @@ class DeckIntegration(unittest.TestCase):
         self.assertEqual(a.request('/quiz/extend', second)[0], 303)
         self.assertIn('12 cards · 2 due', a.request('/decks')[2])
         self.assertEqual(self.rate_batch(a, 2), cards[10:])
+        self.assertEqual(self.sql(f'SELECT sum(xp) FROM review_events WHERE user_id={a.user_id}'), '120')
         self.assertNotIn('Keep going', a.request('/quiz')[2])
         self.assertEqual(a.request('/quiz/extend', second)[0], 303)
         self.assertEqual(self.sql(f'SELECT extra_cards FROM review_extensions WHERE user_id={a.user_id}'), '10')
@@ -578,7 +581,7 @@ class DeckIntegration(unittest.TestCase):
         self.sql(f'DELETE FROM users WHERE id={a.user_id}')
         self.assertEqual(self.sql(f'SELECT count(*) FROM review_extensions WHERE user_id={a.user_id}'), '0')
 
-    def test_12_extension_guards_and_failure(self):
+    def test_17_extension_guards_and_failure(self):
         a = Client(self)
         anonymous = Client(self)
         anonymous.cookie = None
@@ -605,35 +608,151 @@ class DeckIntegration(unittest.TestCase):
         self.rate_batch(a, 1)
         self.assertNotIn('Keep going', a.request('/quiz')[2])
 
-    def test_13_extension_profile_timezone_compatibility(self):
-        # The profile PR is independent; support both schemas without requiring it to merge first.
-        has_timezone = self.sql("SELECT count(*) FROM information_schema.columns WHERE table_name='users' AND column_name='timezone'") == '1'
-        if not has_timezone:
-            self.sql("ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'")
+    def test_18_extension_timezone(self):
+        a = Client(self)
+        for _ in range(4):
+            a.noun()
+        self.sql(f"UPDATE users SET timezone='Pacific/Kiritimati' WHERE id={a.user_id}")
+        self.rate_batch(a, 5)
+        first = self.extension_fields(a)
+        self.assertEqual(first['study_day'], self.sql("SELECT (now() AT TIME ZONE 'Pacific/Kiritimati')::date::text"))
+        self.assertEqual(a.request('/quiz/extend', first)[0], 303)
+        self.rate_batch(a, 3)
+        self.sql(f"UPDATE users SET timezone='Pacific/Honolulu' WHERE id={a.user_id}")
+        # Make only the extra cards due, keeping the base five slots reserved.
+        self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 minute' WHERE id IN (SELECT c.id FROM review_cards c JOIN entries e ON e.id=c.entry_id WHERE e.user_id={a.user_id} ORDER BY c.id OFFSET 5)")
+        second = self.extension_fields(a)
+        self.assertNotEqual(second['study_day'], first['study_day'])
+        self.assertEqual(second['study_day'], self.sql("SELECT (now() AT TIME ZONE 'Pacific/Honolulu')::date::text"))
+        self.assertEqual(second['card_limit'], '5')
+        self.assertEqual(a.request('/quiz/extend', first)[0], 303)
+        self.assertEqual(self.sql(f"SELECT study_day::text FROM review_extensions WHERE user_id={a.user_id}"), first['study_day'])
+        self.assertEqual(a.request('/quiz/extend', second)[0], 303)
+        self.assertEqual(self.sql(f"SELECT study_day::text FROM review_extensions WHERE user_id={a.user_id}"), second['study_day'])
+
+    def profile_value(self, html, name):
+        match = re.search(r'id="' + re.escape(name) + r'">([^<]*)<', html)
+        self.assertIsNotNone(match, name)
+        return match.group(1)
+
+    def test_11_private_profile_and_timezone(self):
+        a, b = Client(self), Client(self)
+        code, _, page = a.request("/profile")
+        self.assertEqual(code, 200)
+        self.assertIn('href="/profile">Profile</a>', page)
+        for name, value in {"practice-level": "Level 1", "total-xp": "0 XP", "total-reviews": "0",
+                            "today-reviews": "0", "recall-rate": "—", "current-streak": "0 days", "best-streak": "0 days"}.items():
+            self.assertEqual(self.profile_value(page, name), value)
+        self.assertEqual(len(re.findall(r'data-day="[^"]+" data-reviews="0"', page)), 14)
+        self.assertIn('value="0" max="100"', page)
+        a.cookie = None
+        self.assertEqual(a.request("/profile")[0], 302)
+        self.assertEqual(a.request("/profile/timezone", {"timezone": "America/Toronto"})[0], 302)
+        a.request("/login", {"username": a.username, "password": "DeckCheckPass2026"})
+        for zone in ["Not/A_Zone", "UTC'; DROP TABLE users;--", ""]:
+            self.assertEqual(a.request("/profile/timezone", {"timezone": zone})[0], 400)
+        self.assertEqual(a.request("/profile/timezone", {"timezone": "America/Toronto"})[0], 303)
+        self.assertEqual(self.profile_value(a.request("/profile")[2], "statistics-timezone"), "America/Toronto")
+        self.assertEqual(self.sql(f"SELECT timezone FROM users WHERE id={b.user_id}"), "UTC")
+
+    def test_12_atomic_reviews_and_xp(self):
+        a, b = Client(self), Client(self)
+        entry = a.noun()
+        cards = self.sql(f"SELECT id FROM review_cards WHERE entry_id={entry} ORDER BY id").splitlines()
+        card = cards[0]
+        self.assertEqual(b.request(f"/quiz/rate/{card}", raw={"rating": 2})[0], 404)
+        self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 4})[0], 400)
+        a.request(f"/quiz/reveal/{card}")
+        self.assertEqual(self.sql(f"SELECT count(*) FROM review_events WHERE user_id={a.user_id}"), "0")
+        for rating in range(4):
+            self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 minute' WHERE id={card}")
+            code, _, result = a.request(f"/quiz/rate/{card}", raw={"rating": rating})
+            self.assertEqual(code, 200)
+            self.assertIn('+10 XP', result)
+            self.assertIn('id="review-progress"', result)
+            self.assertEqual(self.sql(f"SELECT count(*)||':'||sum(xp) FROM review_events WHERE user_id={a.user_id}"), f"{rating+1}:{10*(rating+1)}")
+            a.request(f"/quiz/rate/{card}", raw={"rating": rating})
+            self.assertEqual(self.sql(f"SELECT count(*) FROM review_events WHERE user_id={a.user_id}"), str(rating+1))
+        self.assertEqual(self.sql(f"SELECT rating FROM review_events WHERE user_id={a.user_id} ORDER BY id"), "0\n1\n2\n3")
+        page = a.request('/profile')[2]
+        self.assertEqual(self.profile_value(page, 'total-xp'), '40 XP')
+        self.assertEqual(self.profile_value(page, 'recall-rate'), '75%')
+        self.assertEqual(self.profile_value(b.request('/profile')[2], 'total-reviews'), '0')
+        a.request(f"/decks/{a.default}/enabled", {"enabled": 0})
+        self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 minute' WHERE id={card}")
+        a.request(f"/quiz/rate/{card}", raw={"rating": 2})
+        self.assertEqual(self.sql(f"SELECT count(*) FROM review_events WHERE user_id={a.user_id}"), "4")
+        a.request(f"/decks/{a.default}/enabled", {"enabled": 1})
+        before = self.schedules(entry)
+        self.sql("CREATE FUNCTION fail_test_review() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'test review rollback'; END$$; CREATE TRIGGER fail_test_review BEFORE INSERT ON review_events FOR EACH ROW EXECUTE FUNCTION fail_test_review()")
         try:
-            a = Client(self)
-            for _ in range(4):
-                a.noun()
-            self.sql(f"UPDATE users SET timezone='Pacific/Kiritimati' WHERE id={a.user_id}")
-            self.rate_batch(a, 5)
-            first = self.extension_fields(a)
-            self.assertEqual(first['study_day'], self.sql("SELECT (now() AT TIME ZONE 'Pacific/Kiritimati')::date::text"))
-            self.assertEqual(a.request('/quiz/extend', first)[0], 303)
-            self.rate_batch(a, 3)
-            self.sql(f"UPDATE users SET timezone='Pacific/Honolulu' WHERE id={a.user_id}")
-            # Make only the extra cards due, keeping the base five slots reserved.
-            self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 minute' WHERE id IN (SELECT c.id FROM review_cards c JOIN entries e ON e.id=c.entry_id WHERE e.user_id={a.user_id} ORDER BY c.id OFFSET 5)")
-            second = self.extension_fields(a)
-            self.assertNotEqual(second['study_day'], first['study_day'])
-            self.assertEqual(second['study_day'], self.sql("SELECT (now() AT TIME ZONE 'Pacific/Honolulu')::date::text"))
-            self.assertEqual(second['card_limit'], '5')
-            self.assertEqual(a.request('/quiz/extend', first)[0], 303)
-            self.assertEqual(self.sql(f"SELECT study_day::text FROM review_extensions WHERE user_id={a.user_id}"), first['study_day'])
-            self.assertEqual(a.request('/quiz/extend', second)[0], 303)
-            self.assertEqual(self.sql(f"SELECT study_day::text FROM review_extensions WHERE user_id={a.user_id}"), second['study_day'])
+            self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 2})[0], 500)
+            self.assertEqual(self.schedules(entry), before)
+            self.assertEqual(self.sql(f"SELECT count(*) FROM review_events WHERE user_id={a.user_id}"), "4")
         finally:
-            if not has_timezone:
-                self.sql('ALTER TABLE users DROP COLUMN timezone')
+            self.sql("DROP TRIGGER fail_test_review ON review_events; DROP FUNCTION fail_test_review()")
+        self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 2})[0], 200)
+        self.assertEqual(a.request(f"/nouns/{entry}/delete", {})[0], 303)
+        self.assertEqual(self.sql(f"SELECT count(*)||':'||sum(xp)||':'||count(card_id) FROM review_events WHERE user_id={a.user_id}"), "5:50:0")
+        self.assertEqual(self.profile_value(a.request('/profile')[2], 'total-xp'), '50 XP')
+        self.sql(f"DELETE FROM users WHERE id={a.user_id}")
+        self.assertEqual(self.sql(f"SELECT count(*) FROM review_events WHERE user_id={a.user_id}"), "0")
+
+    def test_13_level_thresholds(self):
+        a = Client(self)
+        entry = a.noun()
+        card = self.sql(f"SELECT min(id) FROM review_cards WHERE entry_id={entry}")
+        for xp, level, earned, cost in [(0,1,0,100), (90,1,90,100), (100,2,0,150), (240,2,140,150),
+                                       (250,3,0,200), (440,3,190,200), (450,4,0,250)]:
+            self.sql(f"DELETE FROM review_events WHERE user_id={a.user_id}; INSERT INTO review_events(user_id,form,rating,xp) SELECT {a.user_id},'singular',2,10 FROM generate_series(1,{xp//10})")
+            page = a.request('/profile')[2]
+            self.assertEqual(self.profile_value(page, 'practice-level'), f'Level {level}')
+            self.assertIn(f'value="{earned}" max="{cost}"', page)
+        self.sql(f"DELETE FROM review_events WHERE user_id={a.user_id}; INSERT INTO review_events(user_id,form,rating,xp) SELECT {a.user_id},'singular',2,10 FROM generate_series(1,9)")
+        result = a.request(f'/quiz/rate/{card}', raw={'rating': 0})[2]
+        self.assertIn('Level up!', result)
+        self.assertIn('Level 2', result)
+
+    def test_14_streaks_activity_and_day_boundaries(self):
+        a = Client(self)
+        a.request('/profile/timezone', {'timezone': 'America/Toronto'})
+        def seed(offsets):
+            self.sql(f"DELETE FROM review_events WHERE user_id={a.user_id}")
+            for offset in offsets:
+                self.sql(f"INSERT INTO review_events(user_id,form,rating,xp,reviewed_at) VALUES ({a.user_id},'singular',0,10,(((now() AT TIME ZONE 'America/Toronto')::date-{offset})::timestamp AT TIME ZONE 'America/Toronto'))")
+        seed([0, 0, 1, 2, 4, 5])
+        page = a.request('/profile')[2]
+        self.assertEqual(self.profile_value(page, 'today-reviews'), '2')
+        self.assertEqual(self.profile_value(page, 'current-streak'), '3 days')
+        self.assertEqual(self.profile_value(page, 'best-streak'), '3 days')
+        activity = re.findall(r'data-day="([^"]+)" data-reviews="(\d+)"', page)
+        self.assertEqual(len(activity), 14)
+        self.assertEqual([int(count) for _, count in activity[-6:]], [1, 1, 0, 1, 1, 2])
+        seed([1, 2, 3])
+        self.assertEqual(self.profile_value(a.request('/profile')[2], 'current-streak'), '3 days')
+        seed([2, 3, 4])
+        self.assertEqual(self.profile_value(a.request('/profile')[2], 'current-streak'), '0 days')
+        seed([0])
+        # One instant is today's Toronto midnight, but yesterday in Honolulu.
+        a.request('/profile/timezone', {'timezone': 'Pacific/Honolulu'})
+        page = a.request('/profile')[2]
+        today_in_honolulu = self.sql("SELECT (now() AT TIME ZONE 'Pacific/Honolulu')::date::text")
+        event_day = self.sql(f"SELECT (reviewed_at AT TIME ZONE 'Pacific/Honolulu')::date::text FROM review_events WHERE user_id={a.user_id}")
+        self.assertEqual(self.profile_value(page, 'today-reviews'), '1' if event_day == today_in_honolulu else '0')
+        self.assertIn(f'data-day="{event_day}" data-reviews="1"', page)
+
+    def test_15_dst_history(self):
+        a = Client(self)
+        # Toronto dates span March 9, 10 (both sides of the skipped hour), and 11.
+        for stamp in ['2024-03-10 04:30+00', '2024-03-10 06:30+00', '2024-03-10 07:30+00', '2024-03-11 04:30+00',
+                      '2024-11-03 05:30+00', '2024-11-03 06:30+00']:
+            self.sql(f"INSERT INTO review_events(user_id,form,rating,xp,reviewed_at) VALUES ({a.user_id},'plural',2,10,{literal(stamp)})")
+        self.assertEqual(self.profile_value(a.request('/profile')[2], 'best-streak'), '2 days')
+        a.request('/profile/timezone', {'timezone': 'America/Toronto'})
+        page = a.request('/profile')[2]
+        self.assertEqual(self.profile_value(page, 'best-streak'), '3 days')
+        self.assertEqual(self.profile_value(page, 'total-reviews'), '6')
+        self.assertEqual(self.profile_value(page, 'current-streak'), '0 days')
 
     def test_99_legacy_migration(self):
         self.stop()
@@ -648,9 +767,12 @@ class DeckIntegration(unittest.TestCase):
         self.assertEqual(self.sql("SELECT singular FROM nouns WHERE id=200"), "كِتَابٌ")
         self.assertEqual(self.sql("SELECT gender FROM nouns WHERE id=200"), "unknown")
         self.assertEqual(self.sql("SELECT count(*) FROM review_extensions"), "0")
+
+        self.assertEqual(self.sql("SELECT timezone FROM users WHERE id=100"), "UTC")
+        self.assertEqual(self.sql("SELECT count(*) FROM review_events"), "0")
         self.stop()
         self.start()
-        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "4")
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "5")
 
 
 if __name__ == "__main__":

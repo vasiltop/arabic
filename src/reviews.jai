@@ -3,8 +3,7 @@
 // Reviewed/lapsed cards take slots before unseen cards; IDs keep the set stable.
 review_eligibility_sql :: #string SQL
 WITH study_day AS (
-    -- Profile preferences are optional until the independent profile migration is installed.
-    SELECT id AS user_id, (now() AT TIME ZONE COALESCE(to_jsonb(u)->>'timezone','UTC'))::date AS day
+    SELECT id AS user_id, (now() AT TIME ZONE u.timezone)::date AS day
     FROM users u WHERE id=$1
 ), review_limit AS (
     SELECT d.day, 5+COALESCE(x.extra_cards,0) AS card_limit
@@ -118,7 +117,7 @@ quiz_page :: (request: *Http.Request) -> Http.Response {
     if !signed_in return Http.redirect("/login");
     card, found := load_due_card(user.id);
     defer free_db_rows(*card);
-    return noun_page("Review", quiz_card_markup(card, found, user.id), user);
+    return noun_page("Review", tprint("%%", review_progress_markup(user.id), quiz_card_markup(card, found, user.id)), user);
 }
 
 noun_answer_markup :: (card: Card) -> string {
@@ -166,8 +165,9 @@ rate_card :: (id: Http.Path("id", s64), request: *Http.Request) -> Http.Response
     } else {
         interval = max(cast(s32) 1, cast(s32) (cast(float64) card.interval_days * card.ease_factor + 0.5));
     }
-    update_review_sql := tprint("% UPDATE review_cards SET due_at=now() + make_interval(days => $3::integer), interval_days=$3, ease_factor=$4, repetitions=$5, last_reviewed_at=now() WHERE id=$2 AND due_at<=now() AND id IN (SELECT id FROM eligible_cards)", review_eligibility_sql);
-    success, updated := Postgres.execute(database_connection, update_review_sql, user.id, id.value, interval, new_ease, repetitions);
+    // One statement commits both the schedule and XP, or neither. A stale request inserts no event.
+    update_review_sql := tprint("%, updated AS (UPDATE review_cards SET due_at=now() + make_interval(days => $3::integer), interval_days=$3, ease_factor=$4, repetitions=$5, last_reviewed_at=now() WHERE id=$2 AND due_at<=now() AND id IN (SELECT id FROM eligible_cards) RETURNING id,variant) INSERT INTO review_events (user_id,card_id,form,rating,xp) SELECT $1,id,variant,$6,10 FROM updated", review_eligibility_sql);
+    success, updated := Postgres.execute(database_connection, update_review_sql, user.id, id.value, interval, new_ease, repetitions, signals.rating);
     if !success return Http.text("Could not save this review.", 500);
     if updated == 0 return refresh_quiz(user.id);
 
@@ -175,5 +175,6 @@ rate_card :: (id: Http.Path("id", s64), request: *Http.Request) -> Http.Response
     defer free_db_rows(*next_card);
     sse := Datastar.new_sse();
     Datastar.patch_elements(*sse, quiz_card_markup(next_card, has_next, user.id));
+    Datastar.patch_elements(*sse, review_progress_markup(user.id, true));
     return Datastar.sse_response(*sse);
 }

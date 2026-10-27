@@ -4,6 +4,8 @@ Proposals for future work, based on the current noun bank, forms, quiz, and data
 
 Deck creation, activation, noun moves, and portable JSON import/export with merge previews are implemented. See [deck files](DECK-FORMAT.md) for the supported format.
 
+Private profiles, review history, practice levels, XP, streaks, and a 14-day activity chart are implemented. Daily statistics use each learner’s saved timezone.
+
 ## New features
 
 | Feature | Learner experience | Fit with the current app |
@@ -26,6 +28,6 @@ Start with **sentence gap-fill** and **English → Arabic review**: both reuse t
 | 3 | Search the noun bank | Every noun is loaded into one list. Add search by Arabic form or English meaning, ignore vowel marks when matching Arabic, and paginate larger banks. |
 | 4 | Protect work in forms | Noun validation now preserves submitted values. Add field-specific errors and confirm noun deletion before removing its review schedules. Deck deletion already preserves its contents. |
 | 5 | Add review shortcuts | Reveal and ratings require clicking. Add Space to reveal and 1–4 to rate, with accessible shortcut hints and protection against duplicate requests. |
-| 6 | Record review history | Cards store only their latest review timestamp and schedule. Add review events to show difficult nouns and track progress over time. |
+| 6 | Explore difficult nouns | Review events now record ratings, practice time, and XP. Add per-noun trends and focused practice for repeatedly missed cards. |
 
 The deck work separates noun CRUD, deck management, review selection, storage helpers, and transfer handling, and releases their database results and rendering buffers. Before increasing usage, measure memory over longer review sessions and add a connection pool for concurrent traffic.
