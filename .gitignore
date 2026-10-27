@@ -1,0 +1,32 @@
+# Jacket/Jai compiler output (current and previous entry points)
+/build/
+/.build/
+/src/main
+/src/.build/
+*.o
+*.obj
+*.dSYM/
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+
+# Local database files, backups, and runtime state
+/.local/
+/.dev/
+/pgdata/
+*.dump
+*.backup
+*.log
+*.pid
+*.pid.lock
+
+# macOS and editor files
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
