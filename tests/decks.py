@@ -413,6 +413,109 @@ class DeckIntegration(unittest.TestCase):
         invalid['entries'][0]['data']['gender'] = 'neuter'
         b.preview(invalid, 'invalid noun fields')
 
+    def test_09_large_deck_learning_limit(self):
+        a = Client(self)
+        document = {
+            "format": "learn-arabic-deck", "version": 2,
+            "deck": {"id": str(uuid.uuid4()), "name": "Large deck"},
+            "entries": [{"id": str(uuid.uuid4()), "type": "noun", "data": DATA} for _ in range(250)],
+        }
+        token, _ = a.preview(document)
+        self.assertEqual(a.confirm(token, "Large deck")[0], 303)
+        deck = int(self.sql(f"SELECT id FROM decks WHERE user_id={a.user_id} AND NOT is_default"))
+        cards = list(map(int, self.sql(f"SELECT c.id FROM review_cards c JOIN entries e ON e.id=c.entry_id WHERE e.deck_id={deck} ORDER BY c.id").splitlines()))
+        self.assertEqual(len(cards), 500)
+        self.assertIn("500 cards · 0 due", a.request("/decks")[2])
+        self.assertEqual(a.request(f"/decks/{deck}/enabled", {"enabled": 1})[0], 303)
+        self.assertIn("500 cards · 5 due", a.request("/decks")[2])
+        prompt = a.request("/quiz")[2]
+        self.assertIn("Learn up to 5 cards at a time", prompt)
+        self.assertIn("Singular and plural count separately", prompt)
+        before = self.sql(f"SELECT row_to_json(c)::text FROM review_cards c WHERE id={cards[5]}")
+        for card in (cards[5], cards[-1]):
+            self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{card}")[2])
+            self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 3})[0], 200)
+        self.assertEqual(self.sql(f"SELECT row_to_json(c)::text FROM review_cards c WHERE id={cards[5]}"), before)
+        stranger = Client(self)
+        self.assertEqual(stranger.request(f"/quiz/reveal/{cards[0]}")[0], 404)
+        self.assertEqual(stranger.request(f"/quiz/rate/{cards[0]}", raw={"rating": 2})[0], 404)
+
+        # Rating each card once must not replace it with another unfamiliar card.
+        seen = []
+        for _ in range(5):
+            prompt = a.request("/quiz")[2]
+            card = int(re.search(r"/quiz/reveal/(\d+)", prompt).group(1))
+            seen.append(card)
+            self.assertIn('class="quiz-answer"', a.request(f"/quiz/reveal/{card}")[2])
+            self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 2})[0], 200)
+        self.assertEqual(seen, cards[:5])
+        for _ in range(3):
+            self.assertIn("No reviews due", a.request("/quiz")[2])
+        self.assertIn("500 cards · 0 due", a.request("/decks")[2])
+        self.stop()
+        self.start()
+        self.assertIn("No reviews due", a.request("/quiz")[2])
+        self.assertEqual(self.sql(f"SELECT count(*) FROM review_cards c JOIN entries e ON e.id=c.entry_id WHERE e.user_id={a.user_id} AND last_reviewed_at IS NOT NULL"), "5")
+
+        # Advancing the scheduled reviews keeps the same five cards in learning.
+        learning_ids = ','.join(map(str, cards[:5]))
+        self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 second' WHERE id IN ({learning_ids})")
+        self.assertIn("500 cards · 5 due", a.request("/decks")[2])
+        self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{cards[5]}")[2])
+        card = cards[0]
+        self.assertEqual(a.request(f"/quiz/rate/{card}", raw={"rating": 0})[0], 200)
+        self.assertEqual(self.sql(f"SELECT repetitions FROM review_cards WHERE id={card}"), "0")
+        self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{cards[5]}")[2])
+        self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 second' WHERE id={card}")
+        a.request(f"/quiz/rate/{card}", raw={"rating": 2})
+        self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{cards[5]}")[2])
+        self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 second' WHERE id={card}")
+        a.request(f"/quiz/rate/{card}", raw={"rating": 2})
+        self.assertIn('class="quiz-answer"', a.request(f"/quiz/reveal/{cards[5]}")[2])
+        self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{cards[6]}")[2])
+        self.assertEqual(self.sql(f"SELECT repetitions||':'||interval_days FROM review_cards WHERE id={card}"), "2:6")
+
+        # Learned cards remain reviewable alongside the five learning slots.
+        self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 second' WHERE id={card}")
+        self.assertIn("500 cards · 6 due", a.request("/decks")[2])
+        self.assertIn('class="quiz-answer"', a.request(f"/quiz/reveal/{card}")[2])
+        # A lapse takes priority over an unseen card without resetting schedules.
+        a.request(f"/quiz/rate/{card}", raw={"rating": 0})
+        self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{cards[5]}")[2])
+        self.assertIn("500 cards · 4 due", a.request("/decks")[2])
+
+    def test_10_learning_limit_across_decks(self):
+        a = Client(self)
+        older = a.deck("Older")
+        for _ in range(3):
+            a.noun(older)
+        a.request(f"/decks/{older}/enabled", {"enabled": 0})
+        for _ in range(3):
+            a.noun()
+        cards = list(map(int, self.sql(f"SELECT c.id FROM review_cards c JOIN entries e ON e.id=c.entry_id WHERE e.user_id={a.user_id} ORDER BY c.id").splitlines()))
+        started = cards[6]
+        self.assertEqual(a.request(f"/quiz/rate/{started}", raw={"rating": 1})[0], 200)
+        a.request(f"/decks/{older}/enabled", {"enabled": 1})
+        # The in-progress card retains a slot even with older unseen cards enabled.
+        self.sql(f"UPDATE review_cards SET due_at=now()-interval '1 second' WHERE id={started}")
+        self.assertIn('class="quiz-answer"', a.request(f"/quiz/reveal/{started}")[2])
+        for card in cards[:4]:
+            self.assertIn('class="quiz-answer"', a.request(f"/quiz/reveal/{card}")[2])
+        for card in (cards[4], cards[7], cards[-1]):
+            self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{card}")[2])
+        self.assertIn(f"/quiz/reveal/{started}", a.request("/quiz")[2])
+        # Disable/re-enable and noun moves preserve progress and recheck eligibility.
+        saved = self.schedules(int(self.sql(f"SELECT entry_id FROM review_cards WHERE id={started}")))
+        a.request(f"/decks/{a.default}/enabled", {"enabled": 0})
+        self.assertNotIn('class="quiz-answer"', a.request(f"/quiz/reveal/{started}")[2])
+        a.request(f"/decks/{a.default}/enabled", {"enabled": 1})
+        self.assertIn('class="quiz-answer"', a.request(f"/quiz/reveal/{started}")[2])
+        entry = int(self.sql(f"SELECT entry_id FROM review_cards WHERE id={started}"))
+        self.assertEqual(a.request(f"/nouns/{entry}/edit", {**DATA, "deck_id": older})[0], 303)
+        self.assertIn('class="quiz-answer"', a.request(f"/quiz/reveal/{started}")[2])
+        self.assertEqual(self.sql(f"SELECT repetitions||':'||interval_days FROM review_cards WHERE id={started}"), "1:1")
+        self.assertEqual(self.schedules(entry), saved)
+
     def test_99_legacy_migration(self):
         self.stop()
         self.sql("ALTER DATABASE arabic RENAME TO feature_test_data", admin=True)

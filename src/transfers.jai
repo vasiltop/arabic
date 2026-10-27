@@ -182,7 +182,7 @@ decode_deck_file :: (text: string) -> Deck_File, string {
 }
 
 load_deck_by_uid :: (user_id: s64, uid: string) -> Deck, bool {
-    rows, ok := Postgres.execute(database_connection, Deck, tprint("% WHERE d.user_id=$1 AND d.uid=$2::uuid GROUP BY d.id", deck_select_sql), user_id, uid);
+    rows, ok := Postgres.execute(database_connection, Deck, tprint("% % WHERE d.user_id=$1 AND d.uid=$2::uuid GROUP BY d.id", review_eligibility_sql, deck_select_sql), user_id, uid);
     if !ok || rows.count == 0 {
         free_db_rows(*rows);
         return .{}, false;

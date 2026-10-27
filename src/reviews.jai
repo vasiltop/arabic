@@ -1,6 +1,23 @@
+// Reserve learning slots even when those cards are not due. Applying LIMIT after
+// due_at would introduce five more new cards every time the learner returned.
+// Reviewed/lapsed cards take slots before unseen cards; IDs keep the set stable.
+review_eligibility_sql :: #string SQL
+WITH active_cards AS (
+    SELECT c.*,e.type FROM review_cards c
+    JOIN entries e ON e.id=c.entry_id JOIN decks d ON d.id=e.deck_id
+    WHERE e.user_id=$1 AND d.enabled
+), learning_cards AS (
+    SELECT id FROM active_cards WHERE repetitions<2
+    ORDER BY (last_reviewed_at IS NULL),id LIMIT 5
+), eligible_cards AS (
+    SELECT * FROM active_cards
+    WHERE repetitions>=2 OR id IN (SELECT id FROM learning_cards)
+)
+SQL
+
 load_due_card :: (user_id: s64) -> Card, bool {
     ids, success := Postgres.execute(database_connection, Id_Row,
-        "SELECT c.id FROM review_cards c JOIN entries e ON e.id=c.entry_id JOIN decks d ON d.id=e.deck_id WHERE e.user_id=$1 AND d.enabled AND c.due_at<=now() ORDER BY c.due_at,random() LIMIT 1", user_id);
+        tprint("% SELECT id FROM eligible_cards WHERE due_at<=now() ORDER BY (last_reviewed_at IS NULL),due_at,id LIMIT 1", review_eligibility_sql), user_id);
     defer free_db_rows(*ids);
     if !success || ids.count == 0 return .{}, false;
     return load_due_card_by_id(user_id, ids[0].id);
@@ -8,7 +25,7 @@ load_due_card :: (user_id: s64) -> Card, bool {
 
 load_due_card_by_id :: (user_id: s64, card_id: s64) -> Card, bool {
     rows, success := Postgres.execute(database_connection, Card,
-        "SELECT c.id,c.entry_id,c.variant AS form,e.type,c.interval_days,c.ease_factor,c.repetitions FROM review_cards c JOIN entries e ON e.id=c.entry_id JOIN decks d ON d.id=e.deck_id WHERE e.user_id=$1 AND c.id=$2 AND d.enabled AND c.due_at<=now()", user_id, card_id);
+        tprint("% SELECT id,entry_id,variant AS form,type,interval_days,ease_factor,repetitions FROM eligible_cards WHERE id=$2 AND due_at<=now()", review_eligibility_sql), user_id, card_id);
     if !success || rows.count == 0 {
         free_db_rows(*rows);
         return .{}, false;
@@ -61,7 +78,7 @@ quiz_page :: (request: *Http.Request) -> Http.Response {
     if !signed_in return Http.redirect("/login");
     card, found := load_due_card(user.id);
     defer free_db_rows(*card);
-    return noun_page("Review", quiz_card_markup(card, found, user.id), user);
+    return noun_page("Review", tprint("<p class=\"muted\">Learn up to 5 cards at a time. Two successful reviews unlock a new card. Singular and plural count separately.</p>%", quiz_card_markup(card, found, user.id)), user);
 }
 
 noun_answer_markup :: (card: Card) -> string {
@@ -109,8 +126,8 @@ rate_card :: (id: Http.Path("id", s64), request: *Http.Request) -> Http.Response
     } else {
         interval = max(cast(s32) 1, cast(s32) (cast(float64) card.interval_days * card.ease_factor + 0.5));
     }
-    update_review_sql := "UPDATE review_cards SET due_at=now() + make_interval(days => $1::integer), interval_days=$1, ease_factor=$2, repetitions=$3, last_reviewed_at=now() WHERE id=$4 AND due_at<=now() AND entry_id IN (SELECT e.id FROM entries e JOIN decks d ON d.id=e.deck_id WHERE e.user_id=$5 AND d.enabled)";
-    success, updated := Postgres.execute(database_connection, update_review_sql, interval, new_ease, repetitions, id.value, user.id);
+    update_review_sql := tprint("% UPDATE review_cards SET due_at=now() + make_interval(days => $3::integer), interval_days=$3, ease_factor=$4, repetitions=$5, last_reviewed_at=now() WHERE id=$2 AND due_at<=now() AND id IN (SELECT id FROM eligible_cards)", review_eligibility_sql);
+    success, updated := Postgres.execute(database_connection, update_review_sql, user.id, id.value, interval, new_ease, repetitions);
     if !success return Http.text("Could not save this review.", 500);
     if updated == 0 return refresh_quiz(user.id);
 

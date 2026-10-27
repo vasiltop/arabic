@@ -24,6 +24,8 @@ Register a username and a password of at least 12 characters, add nouns with the
 
 Use **Decks** to organize nouns and choose which decks enter the review queue. Each account has a permanent Default deck. Both noun forms stay together when moving between decks, and disabling a deck preserves its schedules. Deleting a deck moves its entries to Default. Export and import content through versioned JSON files; imported decks start disabled. See the [deck file format and merge rules](docs/DECK-FORMAT.md).
 
+Review focuses on at most **five learning cards across enabled decks**, including cards waiting for their next review. Singular and plural forms count separately. A card leaves the learning set after two consecutive successful ratings (Hard, Good, or Easy), making room for one new card. Again resets its progress and keeps it in learning. Previously reviewed learning cards take priority over unseen cards, and learned cards still return on their normal schedule. Refreshing or reopening Review does not unlock more cards. Deck due counts show only eligible cards.
+
 Checking and building configure linking but never start or initialize a database:
 
 ```sh

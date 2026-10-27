@@ -16,14 +16,14 @@ Deck_Enabled_Form :: struct {
     enabled: s32;
 }
 
-deck_select_sql :: "SELECT d.id,d.uid::text,d.name,d.enabled,d.is_default, count(c.id)::bigint AS cards, count(c.id) FILTER (WHERE c.due_at<=now())::bigint AS due FROM decks d LEFT JOIN entries e ON e.deck_id=d.id LEFT JOIN review_cards c ON c.entry_id=e.id";
+deck_select_sql :: "SELECT d.id,d.uid::text,d.name,d.enabled,d.is_default, count(c.id)::bigint AS cards, count(c.id) FILTER (WHERE c.due_at<=now() AND c.id IN (SELECT id FROM eligible_cards))::bigint AS due FROM decks d LEFT JOIN entries e ON e.deck_id=d.id LEFT JOIN review_cards c ON c.entry_id=e.id";
 
 load_decks :: (user_id: s64) -> [] Deck, bool {
-    return Postgres.execute(database_connection, Deck, tprint("% WHERE d.user_id=$1 GROUP BY d.id ORDER BY d.is_default DESC,lower(d.name),d.id", deck_select_sql), user_id);
+    return Postgres.execute(database_connection, Deck, tprint("% % WHERE d.user_id=$1 GROUP BY d.id ORDER BY d.is_default DESC,lower(d.name),d.id", review_eligibility_sql, deck_select_sql), user_id);
 }
 
 load_deck :: (user_id: s64, id: s64) -> Deck, bool {
-    rows, success := Postgres.execute(database_connection, Deck, tprint("% WHERE d.user_id=$1 AND d.id=$2 GROUP BY d.id", deck_select_sql), user_id, id);
+    rows, success := Postgres.execute(database_connection, Deck, tprint("% % WHERE d.user_id=$1 AND d.id=$2 GROUP BY d.id", review_eligibility_sql, deck_select_sql), user_id, id);
     if !success || rows.count == 0 {
         free_db_rows(*rows);
         return .{}, false;
@@ -68,6 +68,7 @@ decks_page :: (request: *Http.Request) -> Http.Response {
     b: String_Builder;
     defer free_buffers(*b);
     append(*b, "<section class=\"topline\"><h1>Decks</h1><a class=\"button secondary\" href=\"/decks/import\">Import</a></section>");
+    append(*b, "<p class=\"muted\">Learn up to 5 cards at a time across enabled decks. Due counts include only cards ready to review.</p>");
     append(*b, "<form class=\"actions deck-create\" action=\"/decks\" method=\"post\"><label class=\"sr-only\" for=\"deck-name\">Deck name</label><input id=\"deck-name\" name=\"name\" placeholder=\"Deck name\" maxlength=\"100\" required><button type=\"submit\">Create deck</button></form>");
     for deck: decks {
         append(*b, tprint("<section class=\"panel deck-row\"><div class=\"topline\"><h2><a href=\"/nouns?deck=%\">%</a></h2><form action=\"/decks/%/enabled\" method=\"post\"><input type=\"hidden\" name=\"enabled\" value=\"%\"><button type=\"submit\" class=\"%\" aria-label=\"% %\">%</button></form></div><p class=\"muted\">% cards · % due%</p>",
