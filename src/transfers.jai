@@ -53,6 +53,7 @@ Existing_Entry :: struct {
     singular: string;
     plural: string;
     meaning: string;
+    gender: string;
     singular_sentence: string;
     singular_translation: string;
     plural_sentence: string;
@@ -120,16 +121,22 @@ entry_validate_payload :: (kind: string, value: Json.Json_Value) -> bool {
     return valid;
 }
 
-noun_equal :: (a: Noun_Data, b: Noun_Data) -> bool {
+noun_equal :: (a: Noun_Data, b: Noun_Data, compare_gender := true) -> bool {
     return a.singular == b.singular && a.plural == b.plural && a.meaning == b.meaning &&
         a.singular_sentence == b.singular_sentence && a.singular_translation == b.singular_translation &&
-        a.plural_sentence == b.plural_sentence && a.plural_translation == b.plural_translation;
+        a.plural_sentence == b.plural_sentence && a.plural_translation == b.plural_translation &&
+        (!compare_gender || a.gender == b.gender);
+}
+
+entry_gender_specified :: (incoming: Transfer_Entry) -> bool {
+    value := incoming.data;
+    return Json.json_get(*value, "gender") != null;
 }
 
 entry_payload_changed :: (existing: Existing_Entry, incoming: Transfer_Entry) -> bool {
     data, valid := noun_payload(incoming.data);
     defer Json.free_json(*data);
-    return !valid || existing.type != incoming.type || !noun_equal(noun_data(existing), data);
+    return !valid || existing.type != incoming.type || !noun_equal(noun_data(existing), data, entry_gender_specified(incoming));
 }
 
 entry_import_create :: (user_id: s64, deck_id: s64, incoming: Transfer_Entry) -> bool {
@@ -145,7 +152,10 @@ entry_import_update :: (user_id: s64, existing: Existing_Entry, incoming: Transf
     if incoming.type != "noun" || existing.type != incoming.type return false;
     data, valid := noun_payload(incoming.data);
     defer Json.free_json(*data);
-    return valid && save_noun_data(user_id, existing.id, data) && db_exec(sql("UPDATE entries SET updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2"), existing.id, user_id);
+    effective := data;
+    // A legacy file that omits gender has no information to replace an existing value.
+    if !entry_gender_specified(incoming) effective.gender = existing.gender;
+    return valid && save_noun_data(user_id, existing.id, effective) && db_exec(sql("UPDATE entries SET updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2"), existing.id, user_id);
 }
 
 decode_deck_file :: (text: string) -> Deck_File, string {
@@ -154,12 +164,13 @@ decode_deck_file :: (text: string) -> Deck_File, string {
     document, error := Json.from_json(Deck_File, text, .{ max_depth = 32, max_size = DECK_FILE_LIMIT });
     defer Json.free_json(*error);
     if error.kind != .NONE return document, tprint("Invalid deck file: %", Json.error_text(error));
-    if document.format != "learn-arabic-deck" || document.version != 1 return document, "Unsupported deck format or version.";
+    if document.format != "learn-arabic-deck" || (document.version != 1 && document.version != 2) return document, "Unsupported deck format or version.";
     if !valid_uuid(document.deck.id) || !valid_deck_name(document.deck.name) return document, "The deck needs a lowercase UUID and a name of 1–100 characters.";
     if document.entries.count > 10000 return document, "A deck file can contain at most 10,000 entries.";
     for entry, index: document.entries {
         if !valid_uuid(entry.id) return document, tprint("Entry % needs a lowercase UUID.", index + 1);
         if !entry_supported(entry.type) return document, tprint("Entry % has an unsupported type: %.", index + 1, entry.type);
+        if document.version == 2 && !entry_gender_specified(entry) return document, tprint("Entry % needs a gender field.", index + 1);
         if !entry_validate_payload(entry.type, entry.data) return document, tprint("Entry % has missing or invalid noun fields.", index + 1);
     }
     duplicates, checked := Postgres.execute(database_connection, Id_Row,
@@ -183,7 +194,7 @@ load_deck_by_uid :: (user_id: s64, uid: string) -> Deck, bool {
 
 merge_entries :: (user_id: s64, payload: string) -> [] Existing_Entry, bool {
     return Postgres.execute(database_connection, Existing_Entry,
-        "SELECT e.id,e.uid::text,e.type,e.deck_id,d.name AS deck_name,(item.ordinality-1)::bigint AS source_index,n.singular,n.plural,n.meaning,n.singular_sentence,n.singular_translation,n.plural_sentence,n.plural_translation FROM entries e JOIN decks d ON d.id=e.deck_id LEFT JOIN nouns n ON n.id=e.id JOIN jsonb_array_elements(($2::jsonb)->'entries') WITH ORDINALITY item(value,ordinality) ON e.uid=(item.value->>'id')::uuid WHERE e.user_id=$1", user_id, payload);
+        "SELECT e.id,e.uid::text,e.type,e.deck_id,d.name AS deck_name,(item.ordinality-1)::bigint AS source_index,n.singular,n.plural,n.meaning,n.gender,n.singular_sentence,n.singular_translation,n.plural_sentence,n.plural_translation FROM entries e JOIN decks d ON d.id=e.deck_id LEFT JOIN nouns n ON n.id=e.id JOIN jsonb_array_elements(($2::jsonb)->'entries') WITH ORDINALITY item(value,ordinality) ON e.uid=(item.value->>'id')::uuid WHERE e.user_id=$1", user_id, payload);
 }
 
 merge_snapshot :: (user_id: s64, payload: string) -> string, bool {
@@ -216,9 +227,10 @@ entry_render_diff :: (existing: Existing_Entry, incoming: Transfer_Entry) -> str
     data, valid := noun_payload(incoming.data);
     defer Json.free_json(*data);
     if !valid return "";
-    labels: [] string = .["Singular", "Plural", "Meaning", "Singular example", "English translation", "Plural example", "English translation"];
-    old: [] string = .[existing.singular, existing.plural, existing.meaning, existing.singular_sentence, existing.singular_translation, existing.plural_sentence, existing.plural_translation];
-    incoming_values: [] string = .[data.singular, data.plural, data.meaning, data.singular_sentence, data.singular_translation, data.plural_sentence, data.plural_translation];
+    labels: [] string = .["Singular", "Plural", "Meaning", "Singular example", "English translation", "Plural example", "English translation", "Gender"];
+    old: [] string = .[existing.singular, existing.plural, existing.meaning, existing.singular_sentence, existing.singular_translation, existing.plural_sentence, existing.plural_translation, noun_gender_label(existing.gender)];
+    incoming_gender := ifx entry_gender_specified(incoming) then data.gender else existing.gender;
+    incoming_values: [] string = .[data.singular, data.plural, data.meaning, data.singular_sentence, data.singular_translation, data.plural_sentence, data.plural_translation, noun_gender_label(incoming_gender)];
     b: String_Builder;
     defer free_buffers(*b);
     append(*b, "<div class=\"diff-scroll\"><table class=\"import-diff\"><thead><tr><th>Field</th><th>Current</th><th>Imported</th></tr></thead><tbody>");
@@ -439,7 +451,7 @@ export_deck :: (id: Http.Path("id", s64), request: *Http.Request) -> Http.Respon
         "SELECT id,uid::text,type FROM entries WHERE user_id=$1 AND deck_id=$2 ORDER BY id", user.id, deck.id);
     defer free_db_rows(*identities);
     if !loaded return Http.text("Could not export deck.", 500);
-    document := Deck_File.{ format = "learn-arabic-deck", version = 1, deck = .{ id = deck.uid, name = deck.name } };
+    document := Deck_File.{ format = "learn-arabic-deck", version = 2, deck = .{ id = deck.uid, name = deck.name } };
     entries: [..] Transfer_Entry;
     defer {
         for *entry: entries Json.free_json(*entry.data);

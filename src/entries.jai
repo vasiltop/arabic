@@ -7,18 +7,29 @@ Noun_Data :: struct {
     singular_translation: string;
     plural_sentence: string;
     plural_translation: string;
+    gender := "unknown"; @json(default)
 }
 
 noun_data :: (noun: $T) -> Noun_Data {
     return .{ noun.singular, noun.plural, noun.meaning, noun.singular_sentence,
-              noun.singular_translation, noun.plural_sentence, noun.plural_translation };
+              noun.singular_translation, noun.plural_sentence, noun.plural_translation, noun.gender };
+}
+
+known_noun_gender :: (gender: string) -> bool {
+    return gender == "masculine" || gender == "feminine";
+}
+
+noun_gender_label :: (gender: string) -> string {
+    if gender == "masculine" return "Masculine";
+    if gender == "feminine" return "Feminine";
+    return "Gender not set";
 }
 
 valid_noun_data :: (noun: Noun_Data) -> bool {
     return String.trim(noun.singular).count > 0 && String.trim(noun.plural).count > 0 &&
            String.trim(noun.meaning).count > 0 && String.trim(noun.singular_sentence).count > 0 &&
            String.trim(noun.singular_translation).count > 0 && String.trim(noun.plural_sentence).count > 0 &&
-           String.trim(noun.plural_translation).count > 0;
+           String.trim(noun.plural_translation).count > 0 && (known_noun_gender(noun.gender) || noun.gender == "unknown");
 }
 
 entry_supported :: (kind: string) -> bool {
@@ -45,15 +56,15 @@ insert_noun_entry :: (user_id: s64, deck_id: s64, data: Noun_Data, uid := "") ->
     defer free_db_rows(*ids);
     if !success || ids.count != 1 return 0, false;
     id := ids[0].id;
-    saved := db_exec(sql("INSERT INTO nouns (id,singular,plural,meaning,singular_sentence,singular_translation,plural_sentence,plural_translation) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"),
-        id, data.singular, data.plural, data.meaning, data.singular_sentence, data.singular_translation, data.plural_sentence, data.plural_translation);
+    saved := db_exec(sql("INSERT INTO nouns (id,singular,plural,meaning,singular_sentence,singular_translation,plural_sentence,plural_translation,gender) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"),
+        id, data.singular, data.plural, data.meaning, data.singular_sentence, data.singular_translation, data.plural_sentence, data.plural_translation, data.gender);
     if !saved || !entry_create_cards(id, "noun") return 0, false;
     return id, true;
 }
 
 save_noun_data :: (user_id: s64, entry_id: s64, data: Noun_Data) -> bool {
-    return db_exec(sql("UPDATE nouns SET singular=$1,plural=$2,meaning=$3,singular_sentence=$4,singular_translation=$5,plural_sentence=$6,plural_translation=$7 WHERE id=$8 AND id IN (SELECT id FROM entries WHERE user_id=$9 AND type='noun')"),
-        data.singular, data.plural, data.meaning, data.singular_sentence, data.singular_translation, data.plural_sentence, data.plural_translation, entry_id, user_id);
+    return db_exec(sql("UPDATE nouns SET singular=$1,plural=$2,meaning=$3,singular_sentence=$4,singular_translation=$5,plural_sentence=$6,plural_translation=$7,gender=$10 WHERE id=$8 AND id IN (SELECT id FROM entries WHERE user_id=$9 AND type='noun')"),
+        data.singular, data.plural, data.meaning, data.singular_sentence, data.singular_translation, data.plural_sentence, data.plural_translation, entry_id, user_id, data.gender);
 }
 
 entry_render_prompt :: (card: Card) -> string {

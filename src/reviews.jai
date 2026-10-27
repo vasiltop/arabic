@@ -71,7 +71,7 @@ noun_answer_markup :: (card: Card) -> string {
     translation := ifx card.form == "plural" then data.plural_translation else data.singular_translation;
     word := ifx card.form == "plural" then data.plural else data.singular;
     card_id := tprint("%", card.id);
-    return tprint("<div class=\"quiz-answer\" id=\"quiz-answer\"><div class=\"arabic\" lang=\"ar\" dir=\"rtl\">%</div><h2>%</h2><p>%</p><div class=\"actions ratings\"><button type=\"button\" data-on:click=\"$rating = 0; @post('/quiz/rate/%')\">Again</button><button type=\"button\" data-on:click=\"$rating = 1; @post('/quiz/rate/%')\">Hard</button><button type=\"button\" data-on:click=\"$rating = 2; @post('/quiz/rate/%')\">Good</button><button type=\"button\" data-on:click=\"$rating = 3; @post('/quiz/rate/%')\">Easy</button></div></div>", html_escape(word), html_escape(data.meaning), html_escape(translation), card_id, card_id, card_id, card_id);
+    return tprint("<div class=\"quiz-answer\" id=\"quiz-answer\"><div class=\"arabic\" lang=\"ar\" dir=\"rtl\">%</div><h2>%</h2><p class=\"gender-badge\">%</p><p>%</p><div class=\"actions ratings\"><button type=\"button\" data-on:click=\"$rating = 0; @post('/quiz/rate/%')\">Again</button><button type=\"button\" data-on:click=\"$rating = 1; @post('/quiz/rate/%')\">Hard</button><button type=\"button\" data-on:click=\"$rating = 2; @post('/quiz/rate/%')\">Good</button><button type=\"button\" data-on:click=\"$rating = 3; @post('/quiz/rate/%')\">Easy</button></div></div>", html_escape(word), html_escape(data.meaning), noun_gender_label(data.gender), html_escape(translation), card_id, card_id, card_id, card_id);
 }
 
 reveal_card :: (id: Http.Path("id", s64), request: *Http.Request) -> Http.Response {

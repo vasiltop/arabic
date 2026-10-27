@@ -20,7 +20,7 @@ Open <http://127.0.0.1:8080>. No linker-path exports, shell scripts, Docker, or 
 
 `build.jai` discovers the Homebrew library directories at compile time. When the app runs, it connects to the existing local database or starts the Homebrew PostgreSQL 17 cluster on `127.0.0.1:54329`. It initializes a missing cluster, creates a missing `arabic` role/database, and applies pending migrations in order. Existing accounts, nouns, review schedules, and database passwords are preserved. Ctrl+C stops the web server; PostgreSQL stays running and its data persists between runs.
 
-Register a username and a password of at least 12 characters, add nouns, then start a review. Each prompt shows an unvowelled noun and its Arabic example sentence. Recall the meaning and translate the sentence, then reveal the vocalized word and saved English answers. Rate recall with Again, Hard, Good, or Easy.
+Register a username and a password of at least 12 characters, add nouns with their masculine/feminine gender, then start a review. The Nouns page pairs each form with its Arabic example and English translation. Each quiz prompt shows an unvowelled noun and its Arabic example sentence. Recall the meaning and translate the sentence, then reveal the vocalized word, gender, and saved English answers. Rate recall with Again, Hard, Good, or Easy. Older nouns without gender display “Gender not set” until edited.
 
 Use **Decks** to organize nouns and choose which decks enter the review queue. Each account has a permanent Default deck. Both noun forms stay together when moving between decks, and disabling a deck preserves its schedules. Deleting a deck moves its entries to Default. Export and import content through versioned JSON files; imported decks start disabled. See the [deck file format and merge rules](docs/DECK-FORMAT.md).
 
@@ -83,4 +83,4 @@ jacket build
 python3 tests/decks.py
 ```
 
-The integration suite creates and removes its own temporary PostgreSQL cluster. It checks migration of populated databases, deck ownership, activation, noun moves, import/export round trips, stale previews, validation, and rollback. It does not use the normal app database.
+The integration suite creates and removes its own temporary PostgreSQL cluster. It checks migration of populated databases, deck ownership, activation, noun moves, import/export round trips, stale previews, validation, rollback, grammatical gender, and both example displays. It does not use the normal app database.

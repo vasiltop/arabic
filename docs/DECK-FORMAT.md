@@ -5,7 +5,7 @@ Export a deck from **Decks → Export**. Import it through **Decks → Import**,
 ```json
 {
   "format": "learn-arabic-deck",
-  "version": 1,
+  "version": 2,
   "deck": {
     "id": "9bec14fc-29c7-4130-a391-616e58cf837d",
     "name": "Everyday nouns"
@@ -18,6 +18,7 @@ Export a deck from **Decks → Export**. Import it through **Decks → Import**,
         "singular": "كِتَابٌ",
         "plural": "كُتُبٌ",
         "meaning": "book",
+        "gender": "masculine",
         "singular_sentence": "هَذَا كِتَابٌ جَدِيدٌ.",
         "singular_translation": "This is a new book.",
         "plural_sentence": "هَذِهِ كُتُبٌ جَدِيدَةٌ.",
@@ -30,7 +31,11 @@ Export a deck from **Decks → Export**. Import it through **Decks → Import**,
 
 The deck and entry IDs are stable, lowercase UUIDs. Keep them when editing an exported deck so repeated imports can recognize the same content. Names and Arabic text are not identities: equal text with different IDs creates separate entries. Entry IDs must be unique within a file.
 
-Version 1 supports `noun` entries only. Each entry requires all seven nonempty string fields above. Importing creates singular and plural review cards; they are not serialized in the file. A future content type can define a different `data` structure and its own review variants. Unsupported formats, versions, types, invalid UTF-8, and malformed entries are rejected before a preview is saved.
+Version 2 supports `noun` entries only. Each entry requires the seven nonempty vocabulary/example strings above and a `gender` field with `masculine`, `feminine`, or `unknown`. Gender describes the noun's lexical gender and is shared by its singular and plural cards. The add/edit form requires masculine or feminine; `unknown` preserves older content whose gender has not been supplied.
+
+Version 1 files remain importable. If an older entry omits gender, a new entry receives `unknown`; merging into an existing entry preserves its recorded gender. Current exports use version 2, including an explicit `unknown` value when necessary. Gender changes appear in merge previews and require the same explicit acceptance as other content updates.
+
+Importing creates singular and plural review cards; they are not serialized in the file. A future content type can define a different `data` structure and its own review variants. Unsupported formats, versions, types, invalid UTF-8, and malformed entries are rejected before a preview is saved.
 
 ## Merge behavior
 

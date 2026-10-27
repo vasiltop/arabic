@@ -35,7 +35,7 @@ def literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-DATA = dict(singular="كِتَابٌ", plural="كُتُبٌ", meaning='book "quoted" <script>not code</script>',
+DATA = dict(gender="masculine", singular="كِتَابٌ", plural="كُتُبٌ", meaning='book "quoted" <script>not code</script>',
             singular_sentence="هَذَا كِتَابٌ جَدِيدٌ.", singular_translation='This is a "new" book.',
             plural_sentence="هَذِهِ كُتُبٌ جَدِيدَةٌ.", plural_translation="These are new books — yes!")
 
@@ -110,7 +110,7 @@ class DeckIntegration(unittest.TestCase):
             subprocess.run(["jacket", "check"], cwd=ROOT, env=cls.env, check=True)
             subprocess.run(["jacket", "build"], cwd=ROOT, env=cls.env, check=True)
             cls.start()
-            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2"
+            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2,3"
         except BaseException:
             cls.tearDownClass()
             raise
@@ -294,7 +294,7 @@ class DeckIntegration(unittest.TestCase):
         self.assertIn("Default (imported", preview)
         self.assertEqual(b.confirm(token, "Default")[0], 409)
         self.assertEqual(b.confirm(token, "Separate default")[0], 303)
-        for change, error in [(lambda d: d.update(version=2), "Unsupported deck format"),
+        for change, error in [(lambda d: d.update(version=99), "Unsupported deck format"),
                               (lambda d: d["entries"][0].update(type="verb"), "unsupported type"),
                               (lambda d: d["entries"].append(copy.deepcopy(d["entries"][0])), "duplicate entry IDs"),
                               (lambda d: d["entries"][0]["data"].update(singular=" "), "invalid noun fields"),
@@ -342,7 +342,76 @@ class DeckIntegration(unittest.TestCase):
         for _ in range(2):
             result = subprocess.run([str(ROOT / "build/arabic"), "--migrate"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "2")
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "3")
+
+    def test_08_gender_examples_and_legacy_transfer(self):
+        a = Client(self)
+        masculine = a.noun()
+        feminine_data = dict(gender="feminine", singular="مَدْرَسَةٌ", plural="مَدَارِسُ", meaning="school",
+                             singular_sentence="هَذِهِ مَدْرَسَةٌ كَبِيرَةٌ.", singular_translation="This is a big school.",
+                             plural_sentence="هَذِهِ مَدَارِسُ كَبِيرَةٌ.", plural_translation="These are big schools.")
+        feminine = a.noun(data=feminine_data)
+        bank = a.request("/nouns")[2]
+        self.assertEqual(bank.count("<h3>Singular</h3>"), 2)
+        self.assertEqual(bank.count("<h3>Plural</h3>"), 2)
+        for text in [DATA["singular_sentence"], DATA["plural_sentence"], feminine_data["singular_sentence"], feminine_data["plural_sentence"], feminine_data["plural_translation"]]:
+            self.assertIn(text, bank)
+        self.assertIn('This is a &quot;new&quot; book.', bank)
+        self.assertNotIn("<script>not code</script>", bank)
+        self.assertIn(f'/nouns/{feminine}/edit', bank)
+        self.assertIn(f'/nouns/{masculine}/delete', bank)
+        self.assertIn('name="gender" required', a.request('/nouns/new')[2])
+        prompt = a.request('/quiz')[2]
+        self.assertNotIn('Feminine', prompt)
+        self.assertNotIn('Masculine', prompt)
+        cards = self.sql(f"SELECT id FROM review_cards WHERE entry_id={feminine} ORDER BY id").splitlines()
+        for card in cards:
+            answer = a.request('/quiz/reveal/' + card)[2]
+            self.assertIn('class="gender-badge">Feminine', answer)
+        before = self.schedules(feminine)
+        invalid = a.request(f'/nouns/{feminine}/edit', {**feminine_data, 'gender': '', 'deck_id': a.default})
+        self.assertEqual(invalid[0], 400)
+        self.assertIn('Choose masculine or feminine.', invalid[2])
+        self.assertIn(feminine_data['singular_sentence'], invalid[2])
+        self.assertEqual(self.schedules(feminine), before)
+        exported = a.export(a.default)
+        self.assertEqual(exported['version'], 2)
+        self.assertEqual({e['data']['gender'] for e in exported['entries']}, {'masculine', 'feminine'})
+        uid = next(e['id'] for e in exported['entries'] if e['data']['gender'] == 'feminine')
+        changed = copy.deepcopy(exported)
+        next(e for e in changed['entries'] if e['id'] == uid)['data']['gender'] = 'masculine'
+        token, preview = a.preview(changed)
+        self.assertIn('<th>Gender</th>', preview)
+        self.assertEqual(a.confirm(token, updates=[uid])[0], 303)
+        self.assertEqual(self.sql(f'SELECT gender FROM nouns WHERE id={feminine}'), 'masculine')
+        self.assertEqual(self.schedules(feminine), before)
+        legacy = copy.deepcopy(exported)
+        legacy['version'] = 1
+        for entry in legacy['entries']:
+            del entry['data']['gender']
+        b = Client(self)
+        token, _ = b.preview(legacy)
+        self.assertEqual(b.confirm(token, 'Legacy nouns')[0], 303)
+        self.assertEqual(self.sql(f"SELECT count(*) FROM nouns n JOIN entries e ON e.id=n.id WHERE e.user_id={b.user_id} AND n.gender='unknown'"), '2')
+        self.assertIn('Gender not set', b.request('/nouns')[2])
+        # A content update from an older deck must not erase a known gender.
+        legacy['entries'][0]['data']['meaning'] = 'legacy content update'
+        token, preview = a.preview(legacy)
+        self.assertNotIn('<th>Gender</th>', preview)
+        self.assertEqual(a.confirm(token, updates=[legacy['entries'][0]['id']])[0], 303)
+        self.assertEqual(self.sql(f"SELECT count(*) FROM nouns n JOIN entries e ON e.id=n.id WHERE e.user_id={a.user_id} AND n.gender='masculine'"), '2')
+        # New exports of legacy content explicitly retain the unknown state and round-trip it.
+        imported_deck = int(self.sql(f"SELECT id FROM decks WHERE user_id={b.user_id} AND NOT is_default"))
+        unknown_export = b.export(imported_deck)
+        c = Client(self)
+        token, _ = c.preview(unknown_export)
+        self.assertEqual(c.confirm(token)[0], 303)
+        invalid = copy.deepcopy(exported)
+        del invalid['entries'][0]['data']['gender']
+        b.preview(invalid, 'needs a gender field')
+        invalid = copy.deepcopy(exported)
+        invalid['entries'][0]['data']['gender'] = 'neuter'
+        b.preview(invalid, 'invalid noun fields')
 
     def test_99_legacy_migration(self):
         self.stop()
@@ -355,9 +424,10 @@ class DeckIntegration(unittest.TestCase):
         self.assertEqual(self.sql("SELECT id||':'||due_at||':'||interval_days||':'||ease_factor||':'||repetitions||':'||last_reviewed_at FROM review_cards ORDER BY id"), before)
         self.assertEqual(self.sql("SELECT e.id||':'||e.user_id||':'||e.type||':'||d.enabled::text FROM entries e JOIN decks d ON d.id=e.deck_id"), "200:100:noun:true")
         self.assertEqual(self.sql("SELECT singular FROM nouns WHERE id=200"), "كِتَابٌ")
+        self.assertEqual(self.sql("SELECT gender FROM nouns WHERE id=200"), "unknown")
         self.stop()
         self.start()
-        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "2")
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "3")
 
 
 if __name__ == "__main__":

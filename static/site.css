@@ -18,7 +18,18 @@ button.danger { background: #a43f36; }
 .muted { color: #6c716c; }
 .arabic { font-family: system-ui, 'Noto Naskh Arabic', 'Amiri', serif; font-size: 1.6rem; line-height: 1.9; }
 .example-prompt { margin: .25rem auto 1rem; padding: .75rem 1rem; border-radius: .65rem; background: #f5f2ea; }
-.word-row { border-top: 1px solid #ece9e2; padding: 1rem 0; display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+.noun-entry { padding: 1rem 0; }
+.noun-entry + .noun-entry { border-top: 1px solid #e1ddd3; margin-top: 1rem; padding-top: 2rem; }
+.noun-heading { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; }
+.noun-heading h2 { margin: 0 0 .4rem; font-size: 1.25rem; overflow-wrap: anywhere; }
+.noun-heading .actions { margin: 0; }
+.gender-badge { display: inline-block; font-size: .85rem; color: #185b4a; background: #e8eee9; border-radius: 2rem; padding: .2rem .65rem; }
+.noun-forms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
+.noun-form { min-width: 0; border-radius: .75rem; background: #f7f6f0; padding: 1rem; overflow-wrap: anywhere; }
+.noun-form h3 { font-size: .85rem; color: #6c716c; margin: 0; }
+.noun-word { font-size: 1.85rem; margin: .35rem 0; }
+.noun-sentence { font-size: 1.35rem; margin: .5rem 0; }
+.noun-translation { margin: .5rem 0 0; }
 .error { color: #a43f36; }
 .success { color: #185b4a; }
 #quiz-card { text-align: center; }
@@ -43,5 +54,5 @@ button:disabled { opacity: .55; cursor: wait; }
 @media (max-width: 600px) {
     header { align-items: flex-start; flex-direction: column; }
     nav { flex-wrap: wrap; }
-    .word-row { align-items: flex-start; flex-direction: column; }
+    .noun-forms { grid-template-columns: 1fr; }
 }

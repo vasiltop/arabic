@@ -53,7 +53,7 @@ apply_migrations :: (connection: *Postgres.PGconn) -> bool {
     if !sql_command(connection, "SELECT pg_advisory_lock(762184392)") return false;
     defer sql_command(connection, "SELECT pg_advisory_unlock(762184392)");
     if !sql_command(connection, "SET client_min_messages=warning; CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())") return false;
-    files: [] string = .["migrations/001_initial.sql", "migrations/002_decks.sql"];
+    files: [] string = .["migrations/001_initial.sql", "migrations/002_decks.sql", "migrations/003_noun_gender.sql"];
     for filename, index: files {
         rows, read_ok := Postgres.execute(connection, Id_Row, "SELECT version::bigint AS id FROM schema_migrations WHERE version=$1", cast(s32) (index + 1));
         defer free_db_rows(*rows);

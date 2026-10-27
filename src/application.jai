@@ -22,6 +22,7 @@ Noun :: struct {
     singular: string;
     plural: string;
     meaning: string;
+    gender: string;
     singular_sentence: string;
     singular_translation: string;
     plural_sentence: string;
@@ -58,6 +59,7 @@ Noun_Form :: struct {
     singular: string;
     plural: string;
     meaning: string;
+    gender: string;
     singular_sentence: string;
     singular_translation: string;
     plural_sentence: string;

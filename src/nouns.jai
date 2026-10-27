@@ -16,7 +16,7 @@ load_noun :: (user_id: s64, noun_id: s64) -> Noun, bool {
 }
 
 noun_form_value :: (data: Noun_Data, deck_id: s64, id: s64 = 0) -> Noun {
-    return .{ id = id, deck_id = deck_id, singular = data.singular, plural = data.plural, meaning = data.meaning,
+    return .{ id = id, deck_id = deck_id, singular = data.singular, plural = data.plural, meaning = data.meaning, gender = data.gender,
         singular_sentence = data.singular_sentence, singular_translation = data.singular_translation,
         plural_sentence = data.plural_sentence, plural_translation = data.plural_translation };
 }
@@ -49,22 +49,17 @@ nouns_page :: (request: *Http.Request) -> Http.Response {
         append(*content, "<p>No nouns yet.</p>");
     }
     for noun: nouns {
-        append(*content, "<div class=\"word-row\"><div><div class=\"arabic\" lang=\"ar\" dir=\"rtl\">");
-        append(*content, html_escape(noun.singular));
-        append(*content, " · ");
-        append(*content, html_escape(noun.plural));
-        append(*content, "</div><strong>");
-        append(*content, html_escape(noun.meaning));
-        append(*content, "</strong><div class=\"muted\" lang=\"ar\" dir=\"rtl\">");
-        append(*content, html_escape(noun.singular_sentence));
-        append(*content, "</div></div><div class=\"actions\"><a class=\"button secondary\" href=\"/nouns/");
-        append(*content, tprint("%", noun.id));
-        append(*content, "/edit\">Edit</a><form class=\"inline\" action=\"/nouns/");
-        append(*content, tprint("%", noun.id));
-        append(*content, "/delete\" method=\"post\"><button class=\"danger\" type=\"submit\">Delete</button></form></div></div>");
+        append(*content, tprint("<article class=\"noun-entry\"><div class=\"noun-heading\"><div><h2>%</h2><span class=\"gender-badge\">%</span></div><div class=\"actions\"><a class=\"button secondary\" href=\"/nouns/%/edit\">Edit</a><form class=\"inline\" action=\"/nouns/%/delete\" method=\"post\"><button class=\"danger\" type=\"submit\">Delete</button></form></div></div><div class=\"noun-forms\">", html_escape(noun.meaning), noun_gender_label(noun.gender), noun.id, noun.id));
+        append(*content, noun_example_markup("Singular", noun.singular, noun.singular_sentence, noun.singular_translation));
+        append(*content, noun_example_markup("Plural", noun.plural, noun.plural_sentence, noun.plural_translation));
+        append(*content, "</div></article>");
     }
     append(*content, "</section>");
     return noun_page("Nouns", builder_to_string(*content,, temp), user);
+}
+
+noun_example_markup :: (label: string, word: string, sentence: string, translation: string) -> string {
+    return tprint("<section class=\"noun-form\"><h3>%</h3><p class=\"arabic noun-word\" lang=\"ar\" dir=\"rtl\">%</p><p class=\"arabic noun-sentence\" lang=\"ar\" dir=\"rtl\">%</p><p class=\"noun-translation\" lang=\"en\" dir=\"ltr\">%</p></section>", html_escape(label), html_escape(word), html_escape(sentence), html_escape(translation));
 }
 
 noun_form_markup :: (action: string, user_id: s64, noun: Noun = .{}, error_message: string = "") -> string {
@@ -79,6 +74,7 @@ noun_form_markup :: (action: string, user_id: s64, noun: Noun = .{}, error_messa
     append(*b, tprint("<div><label for=\"plural\">Plural (with vowels)</label><input id=\"plural\" name=\"plural\" lang=\"ar\" dir=\"rtl\" required value=\"%\"></div>", html_escape(noun.plural)));
     append(*b, "</div>");
     append(*b, tprint("<label for=\"meaning\">English meaning</label><input id=\"meaning\" name=\"meaning\" required value=\"%\">", html_escape(noun.meaning)));
+    append(*b, tprint("<label for=\"gender\">Gender</label><select id=\"gender\" name=\"gender\" required><option value=\"\"%>Choose gender</option><option value=\"masculine\"%>Masculine</option><option value=\"feminine\"%>Feminine</option></select>", ifx !known_noun_gender(noun.gender) then " selected" else "", ifx noun.gender == "masculine" then " selected" else "", ifx noun.gender == "feminine" then " selected" else ""));
     append(*b, tprint("<div class=\"grid\"><div><label for=\"singular_sentence\">Singular example</label><textarea id=\"singular_sentence\" name=\"singular_sentence\" lang=\"ar\" dir=\"rtl\" required>%</textarea><label for=\"singular_translation\">English translation</label><textarea id=\"singular_translation\" name=\"singular_translation\" required>%</textarea></div>", html_escape(noun.singular_sentence), html_escape(noun.singular_translation)));
     append(*b, tprint("<div><label for=\"plural_sentence\">Plural example</label><textarea id=\"plural_sentence\" name=\"plural_sentence\" lang=\"ar\" dir=\"rtl\" required>%</textarea><label for=\"plural_translation\">English translation</label><textarea id=\"plural_translation\" name=\"plural_translation\" required>%</textarea></div></div>", html_escape(noun.plural_sentence), html_escape(noun.plural_translation)));
     append(*b, "<div class=\"actions\"><button type=\"submit\">Save noun</button><a class=\"button secondary\" href=\"/nouns\">Cancel</a></div></form></section>");
@@ -104,7 +100,7 @@ create_noun :: (form: Http.Form(Noun_Form), request: *Http.Request) -> Http.Resp
     defer free_db_rows(*deck);
     if !found return Http.text("Deck not found.", 404);
     data := noun_data(form);
-    if !valid_noun_data(data) return Http.html(layout("Add noun", noun_form_markup("/nouns", user.id, noun_form_value(data, deck.id), "Fill in every field."), user), 400);
+    if !valid_noun_data(data) || !known_noun_gender(data.gender) return Http.html(layout("Add noun", noun_form_markup("/nouns", user.id, noun_form_value(data, deck.id), ifx !known_noun_gender(data.gender) then "Choose masculine or feminine." else "Fill in every field."), user), 400);
     if !db_begin() return Http.text("Could not save noun.", 500);
     _, inserted := insert_noun_entry(user.id, deck.id, data);
     if !inserted || !db_commit() {
@@ -133,7 +129,7 @@ update_noun :: (id: Http.Path("id", s64), form: Http.Form(Noun_Form), request: *
     defer free_db_rows(*deck);
     if !deck_found return Http.text("Deck not found.", 404);
     data := noun_data(form);
-    if !valid_noun_data(data) return Http.html(layout("Edit noun", noun_form_markup(tprint("/nouns/%/edit", id.value), user.id, noun_form_value(data, deck.id, id.value), "Fill in every field."), user), 400);
+    if !valid_noun_data(data) || !known_noun_gender(data.gender) return Http.html(layout("Edit noun", noun_form_markup(tprint("/nouns/%/edit", id.value), user.id, noun_form_value(data, deck.id, id.value), ifx !known_noun_gender(data.gender) then "Choose masculine or feminine." else "Fill in every field."), user), 400);
     if !db_begin() return Http.text("Could not save noun.", 500);
     saved := save_noun_data(user.id, id.value, data) && db_exec(sql("UPDATE entries SET deck_id=$1,updated_at=clock_timestamp() WHERE id=$2 AND user_id=$3"), deck.id, id.value, user.id);
     if !saved || !db_commit() {
