@@ -33,6 +33,10 @@ practice_level :: (xp: s64) -> s64 {
     return level;
 }
 
+streak_label :: (days: s64) -> string {
+    return tprint("% %", days, ifx days == 1 then "day" else "days");
+}
+
 profile_stats_sql :: #string SQL
 WITH learner AS (
     SELECT timezone, (now() AT TIME ZONE timezone)::date AS today FROM users WHERE id=$1
@@ -99,7 +103,7 @@ profile_page :: (request: *Http.Request) -> Http.Response {
     defer free_buffers(*b);
     append(*b, tprint("<section class=\"topline\"><div><h1>Profile</h1><p class=\"muted\">%</p></div><a class=\"button\" href=\"/quiz\">Review</a></section>", html_escape(user.username)));
     append(*b, tprint("<section class=\"panel level-panel\"><h2 id=\"practice-level\">Level %</h2><p><strong id=\"total-xp\">% XP</strong></p><label for=\"level-progress\">% / % XP toward level %</label><progress id=\"level-progress\" value=\"%\" max=\"%\">% / % XP</progress></section>", level, stat.xp, earned, cost, level+1, earned, cost, earned, cost));
-    append(*b, tprint("<section class=\"profile-stats\" aria-label=\"Practice statistics\"><div class=\"panel\"><h2>Total reviews</h2><p id=\"total-reviews\">%</p></div><div class=\"panel\"><h2>Today’s reviews</h2><p id=\"today-reviews\">%</p></div><div class=\"panel\"><h2>Recall (self-rated)</h2><p id=\"recall-rate\">%</p></div><div class=\"panel\"><h2>Current streak</h2><p id=\"current-streak\">% days</p></div><div class=\"panel\"><h2>Best streak</h2><p id=\"best-streak\">% days</p></div></section>", stat.total_reviews, stat.today_reviews, recall, stat.current_streak, stat.best_streak));
+    append(*b, tprint("<section class=\"profile-stats\" aria-label=\"Practice statistics\"><div class=\"panel\"><h2>Total reviews</h2><p id=\"total-reviews\">%</p></div><div class=\"panel\"><h2>Today’s reviews</h2><p id=\"today-reviews\">%</p></div><div class=\"panel\"><h2>Recall (self-rated)</h2><p id=\"recall-rate\">%</p></div><div class=\"panel\"><h2>Current streak</h2><p id=\"current-streak\">%</p></div><div class=\"panel\"><h2>Best streak</h2><p id=\"best-streak\">%</p></div></section>", stat.total_reviews, stat.today_reviews, recall, streak_label(stat.current_streak), streak_label(stat.best_streak)));
     append(*b, tprint("<section class=\"panel\"><h2>Last 14 days</h2><p class=\"muted\"><span id=\"statistics-timezone\">%</span></p><ol class=\"activity-chart\" aria-label=\"Daily review activity\">", html_escape(stat.timezone)));
     peak: s64 = 1;
     for activity peak = max(peak, it.reviews);
