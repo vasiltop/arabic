@@ -19,21 +19,17 @@ dev_command :: (description: string, args: ..string) -> bool {
     return false;
 }
 
-dev_brew_prefix :: (formula := "") -> string, bool {
-    args: [..] string;
-    defer array_free(args);
-    array_add(*args, "brew");
-    array_add(*args, "--prefix");
-    if formula.count array_add(*args, formula);
-    result, output, errors, timed_out := Dev_Process.run_command(..args,
+dev_postgres_bin :: () -> string, bool {
+    result, output, errors, timed_out := Dev_Process.run_command("pg_config", "--bindir",
         capture_and_return_output = true, timeout_ms = 5000);
     defer free(output);
     defer free(errors);
-    if timed_out || result.type != .EXITED || result.exit_code != 0 {
-        startup_error("Cannot locate PostgreSQL 17. Run `brew install postgresql@17`, then `jacket run` again. Alternatively set DATABASE_URL to an existing database.");
+    directory := String.trim(output);
+    if timed_out || result.type != .EXITED || result.exit_code != 0 || directory.count == 0 {
+        startup_error("Cannot locate PostgreSQL. Install postgresql and libpq-dev, or set DATABASE_URL.");
         return "", false;
     }
-    return copy_string(String.trim(output)), true;
+    return copy_string(directory), true;
 }
 
 // Quote libpq connection-string values without going through a shell.
@@ -87,8 +83,8 @@ dev_prepare_database :: (port: s32) -> bool {
 }
 
 start_local_database :: () -> *Postgres.PGconn, bool {
-    #if OS != .MACOS {
-        startup_error("Automatic local database setup requires macOS and Homebrew. Set DATABASE_URL to use an existing PostgreSQL database.");
+    #if OS != .LINUX {
+        startup_error("Automatic local database setup requires Linux. Set DATABASE_URL to use an existing PostgreSQL database.");
         return null, false;
     }
     port: s32 = 54329;
@@ -113,12 +109,11 @@ start_local_database :: () -> *Postgres.PGconn, bool {
     }
     Postgres.disconnect(database);
 
-    prefix, prefix_ok := dev_brew_prefix("postgresql@17");
-    if !prefix_ok return null, false;
-    defer free(prefix);
-    bin := tprint("%/bin", prefix);
+    bin, bin_ok := dev_postgres_bin();
+    if !bin_ok return null, false;
+    defer free(bin);
     if !Dev_Files.file_exists(tprint("%/pg_ctl", bin)) || !Dev_Files.file_exists(tprint("%/initdb", bin)) {
-        startup_error("PostgreSQL 17 tools are missing. Run `brew install postgresql@17`, then `jacket run` again.");
+        startup_error("PostgreSQL server tools are missing. Install postgresql or set DATABASE_URL.");
         return null, false;
     }
     // PQping distinguishes an existing PostgreSQL server from an absent listener even if the
@@ -127,28 +122,22 @@ start_local_database :: () -> *Postgres.PGconn, bool {
     if ping == .PQPING_NO_RESPONSE {
         data_directory := environment_value("DEV_PGDATA");
         if data_directory.count == 0 {
-            brew_root, root_ok := dev_brew_prefix();
-            if !root_ok return null, false;
-            defer free(brew_root);
-            data_directory = tprint("%/var/postgresql@17", brew_root);
-        }
-        if !Dev_Files.file_exists(tprint("%/PG_VERSION", data_directory)) {
-            print("Initializing local PostgreSQL 17 in %...\n", data_directory);
-            if !dev_command("PostgreSQL initialization", tprint("%/initdb", bin), "-D", data_directory,
-                "--encoding=UTF8", "--locale=C", "--auth-local=trust", "--auth-host=scram-sha-256") return null, false;
-        } else {
-            version, read_ok := File.read_entire_file(tprint("%/PG_VERSION", data_directory));
-            if !read_ok return null, false;
-            defer free(version);
-            if String.trim(version) != "17" {
-                startup_error("The existing PostgreSQL data directory is not version 17. Set DATABASE_URL to that server; its data was left intact.");
+            home_directory := environment_value("HOME");
+            if home_directory.count == 0 {
+                startup_error("Cannot determine the home directory. Set DEV_PGDATA or DATABASE_URL.");
                 return null, false;
             }
+            data_directory = tprint("%/.local/share/learn-arabic/postgres", home_directory);
+        }
+        if !Dev_Files.file_exists(tprint("%/PG_VERSION", data_directory)) {
+            print("Initializing local PostgreSQL in %...\n", data_directory);
+            if !dev_command("PostgreSQL initialization", tprint("%/initdb", bin), "-D", data_directory,
+                "--encoding=UTF8", "--locale=C", "--auth-local=trust", "--auth-host=scram-sha-256") return null, false;
         }
         print("Starting local PostgreSQL on 127.0.0.1:%...\n", port);
         if !dev_command("PostgreSQL startup (check the data directory's server.log for port conflicts)",
             tprint("%/pg_ctl", bin), "-D", data_directory, "-l", tprint("%/server.log", data_directory),
-            "-o", tprint("-p % -h 127.0.0.1", port), "-w", "-t", "20", "start") return null, false;
+            "-o", tprint("-p % -h 127.0.0.1 -k /tmp", port), "-w", "-t", "20", "start") return null, false;
     } else if ping != .PQPING_OK {
         startup_error(tprint("PostgreSQL on port % is not accepting connections. Wait for it to finish starting or set DATABASE_URL; no service was stopped.", port));
         return null, false;

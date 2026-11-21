@@ -1,7 +1,7 @@
-"""Integration checks using a disposable local PostgreSQL 17 cluster.
+"""Integration checks using a disposable local PostgreSQL cluster.
 
 Run from the repository root: python3 tests/decks.py
-Requires the same Homebrew dependencies as `jacket run`; never uses the normal app database.
+Requires the same Linux packages as `jacket run`; never uses the normal app database.
 """
 import base64
 import copy
@@ -22,7 +22,7 @@ import urllib.parse
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-PG = Path(subprocess.check_output(["brew", "--prefix", "postgresql@17"], text=True).strip()) / "bin"
+PG = Path(subprocess.check_output(["pg_config", "--bindir"], text=True).strip())
 
 
 def free_port():
