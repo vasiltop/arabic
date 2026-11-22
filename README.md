@@ -37,6 +37,29 @@ jacket build
 
 The executable is written to `build/arabic`.
 
+## Add nouns from an assistant
+
+In **Profile → Noun API key**, create a key and store it as a secret in your
+client. The key can add nouns to your Default deck. Create a new key to rotate
+it or use **Revoke key** to turn it off.
+
+For each Arabic noun, ask the assistant for fully vowelled singular and plural
+forms, the English meaning in singular/plural format, and the singular form's
+gender (`masculine` or `feminine`). Ask for a contextual example for each form
+and its English translation. Have it send one HTTPS request per noun and report
+the result:
+
+- `POST /api/v1/nouns` with `Content-Type: application/json`
+- `Authorization: Bearer <noun API key>`
+- `Idempotency-Key: <lowercase UUID>` (generate once per noun submission and
+  reuse it on retries)
+- JSON body with `singular`, `plural`, `meaning`, `gender`, `singular_sentence`,
+  `singular_translation`, `plural_sentence`, and `plural_translation`
+
+A successful response includes the noun's numeric `id`. HTTP 201 means the
+request created a noun, and 200 means that submission already has an entry.
+The assistant needs an HTTP-capable tool with access to your saved key.
+
 ## Profile and progress
 
 Open **Profile** to see your private practice level, XP, total and today's reviews, self-rated successful recall, current and best streaks, and a 14-day activity chart. Every accepted review earns **10 XP**, including Again. Revealing an answer or repeating an already-saved submission earns no XP. Successful recall means a rating of Hard, Good, or Easy; it does not affect XP.

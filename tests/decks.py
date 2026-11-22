@@ -49,8 +49,8 @@ class Client:
         self.user_id = int(suite.sql(f"SELECT id FROM users WHERE username={literal(self.username)}"))
         self.default = int(suite.sql(f"SELECT id FROM decks WHERE user_id={self.user_id} AND is_default"))
 
-    def request(self, path, fields=None, raw=None):
-        headers, body = {}, raw
+    def request(self, path, fields=None, raw=None, headers=None):
+        headers, body = dict(headers or {}), raw
         if self.cookie:
             headers["Cookie"] = self.cookie
         if fields is not None:
@@ -110,7 +110,7 @@ class DeckIntegration(unittest.TestCase):
             subprocess.run(["jacket", "check"], cwd=ROOT, env=cls.env, check=True)
             subprocess.run(["jacket", "build"], cwd=ROOT, env=cls.env, check=True)
             cls.start()
-            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2,3,4,5"
+            assert cls.sql("SELECT string_agg(version::text,',' ORDER BY version) FROM schema_migrations") == "1,2,3,4,5,6"
         except BaseException:
             cls.tearDownClass()
             raise
@@ -342,7 +342,7 @@ class DeckIntegration(unittest.TestCase):
         for _ in range(2):
             result = subprocess.run([str(ROOT / "build/arabic"), "--migrate"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "5")
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations", database="explicit_migration_test"), "6")
 
     def test_08_gender_examples_and_legacy_transfer(self):
         a = Client(self)
@@ -754,6 +754,33 @@ class DeckIntegration(unittest.TestCase):
         self.assertEqual(self.profile_value(page, 'total-reviews'), '6')
         self.assertEqual(self.profile_value(page, 'current-streak'), '0 days')
 
+    def test_19_noun_write_key(self):
+        owner, other = Client(self), Client(self)
+        csrf = re.search(r'name="csrf" value="([a-f0-9]{64})"', owner.request("/profile")[2])[1]
+        rotate = "/profile/noun-key/rotate"
+        self.assertEqual(owner.request(rotate, {"csrf": "bad"})[0], 403)
+        self.assertEqual(other.request(rotate, {"csrf": csrf})[0], 403)
+        code, headers, page = owner.request(rotate, {"csrf": csrf})
+        self.assertEqual(code, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        token = re.search(r'id="noun-api-key"[^>]*value="([a-f0-9]{64})"', page)[1]
+        api = "/api/v1/nouns"
+        auth = {"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())}
+        self.assertEqual(owner.request(api, raw=DATA)[0], 401)
+        self.assertEqual(other.request(api, raw={**DATA, "gender": ""}, headers=auth)[0], 400)
+        code, _, response = other.request(api, raw=DATA, headers=auth)
+        self.assertEqual(code, 201)
+        noun_id = json.loads(response)["id"]
+        code, _, response = owner.request(api, raw=DATA, headers=auth)
+        self.assertEqual((code, json.loads(response)["id"]), (200, noun_id))
+        self.assertEqual(self.sql(f"SELECT user_id || ':' || deck_id FROM entries WHERE id={noun_id}"),
+                         f"{owner.user_id}:{owner.default}")
+        self.assertEqual(self.sql(f"SELECT count(*) FROM review_cards WHERE entry_id={noun_id}"), "2")
+        self.assertEqual(owner.request(rotate, {"csrf": csrf})[0], 200)
+        self.assertEqual(other.request(api, raw=DATA, headers=auth)[0], 401)
+        self.assertEqual(owner.request("/profile/noun-key/revoke", {"csrf": csrf})[0], 303)
+        self.assertEqual(self.sql(f"SELECT count(*) FROM noun_write_keys WHERE user_id={owner.user_id}"), "0")
+
     def test_99_legacy_migration(self):
         self.stop()
         self.sql("ALTER DATABASE arabic RENAME TO feature_test_data", admin=True)
@@ -772,7 +799,7 @@ class DeckIntegration(unittest.TestCase):
         self.assertEqual(self.sql("SELECT count(*) FROM review_events"), "0")
         self.stop()
         self.start()
-        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "5")
+        self.assertEqual(self.sql("SELECT count(*) FROM schema_migrations"), "6")
 
 
 if __name__ == "__main__":
