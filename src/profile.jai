@@ -115,6 +115,7 @@ profile_page :: (request: *Http.Request) -> Http.Response {
     append(*b, "<section class=\"panel\"><h2>Timezone</h2><form action=\"/profile/timezone\" method=\"post\"><label class=\"sr-only\" for=\"timezone\">Timezone</label><select id=\"timezone\" name=\"timezone\">");
     for zones append(*b, tprint("<option value=\"%\"%>%</option>", html_escape(it.value), ifx it.value == stat.timezone then " selected" else "", html_escape(it.value)));
     append(*b, "</select><div class=\"actions\"><button type=\"button\" class=\"secondary\" data-on:click=\"document.getElementById('timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone\">Use browser timezone</button><button type=\"submit\">Save timezone</button></div></form></section>");
+    append(*b, tprint("<section class=\"panel\"><h2>Noun API key</h2><form action=\"/profile/noun-key/rotate\" method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"%\"><div class=\"actions\"><button type=\"submit\">Create new key</button><button type=\"submit\" class=\"secondary\" formaction=\"/profile/noun-key/revoke\">Revoke key</button></div></form></section>", noun_key_csrf(request)));
     return Http.html(layout("Profile", builder_to_string(*b,, temp), user));
 }
 
